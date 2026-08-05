@@ -16,5 +16,5 @@ neuron `i`.
 
 ```@autodocs
 Modules = [PlasticRecurrentNeuralNetworks]
-Pages = ["rate_models.jl"]
+Pages = ["rate_models.jl", "rate_inputs.jl"]
 ```
