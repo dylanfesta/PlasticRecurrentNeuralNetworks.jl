@@ -123,7 +123,7 @@ quadratic_rule = PNN.RatePlasticityCovarianceQuadraticallyStabilized(
 
 function reset_rule_state!(rule,initial_weights::Matrix{Float64})
   copy!(rule.synapses_post_pre.weights,initial_weights)
-  rule.t_last_update = -Inf
+  rule.t_last_update[] = -Inf
   return nothing
 end
 
@@ -137,11 +137,12 @@ function plasticity_homeostatic_naive!(
     dt::Float64,
     rule::PNN.RatePlasticityHomeostaticScaling,
   )
-  if t_now - rule.t_last_update < rule.Δt
+  rule.is_active[] || return nothing
+  if t_now - rule.t_last_update[] < rule.Δt
     return nothing
   end
   effective_learning_rate = rule.learning_rate * rule.Δt
-  rule.t_last_update = t_now
+  rule.t_last_update[] = t_now
 
   @inbounds for j in 1:rule.synapses_post_pre.n_pre
     for i in 1:rule.synapses_post_pre.n_post
@@ -189,10 +190,11 @@ function plasticity_homeostatic_kernel!(
     dt::Float64,
     rule::PNN.RatePlasticityHomeostaticScaling,
   )
-  if t_now - rule.t_last_update < rule.Δt
+  rule.is_active[] || return nothing
+  if t_now - rule.t_last_update[] < rule.Δt
     return nothing
   end
-  rule.t_last_update = t_now
+  rule.t_last_update[] = t_now
   update_homeostatic_kernel!(
     rule.synapses_post_pre.weights,
     rule.pop_post.rates_now,
@@ -215,12 +217,13 @@ function plasticity_covariance_naive!(
     dt::Float64,
     rule::PNN.RatePlasticityCovariance,
   )
-  if t_now - rule.t_last_update < rule.Δt
+  rule.is_active[] || return nothing
+  if t_now - rule.t_last_update[] < rule.Δt
     return nothing
   end
   effective_learning_rate = rule.learning_rate * rule.Δt
   covariance_now = rule.covariance_estimator.covariance_now
-  rule.t_last_update = t_now
+  rule.t_last_update[] = t_now
 
   @inbounds for j in 1:rule.synapses_post_pre.n_pre
     for i in 1:rule.synapses_post_pre.n_post
@@ -265,10 +268,11 @@ function plasticity_covariance_kernel!(
     dt::Float64,
     rule::PNN.RatePlasticityCovariance,
   )
-  if t_now - rule.t_last_update < rule.Δt
+  rule.is_active[] || return nothing
+  if t_now - rule.t_last_update[] < rule.Δt
     return nothing
   end
-  rule.t_last_update = t_now
+  rule.t_last_update[] = t_now
   update_covariance_plasticity_kernel!(
     rule.synapses_post_pre.weights,
     rule.covariance_estimator.covariance_now,
@@ -288,12 +292,13 @@ function plasticity_scaled_covariance_naive!(
     dt::Float64,
     rule::PNN.RatePlasticityScaledCovariance,
   )
-  if t_now - rule.t_last_update < rule.Δt
+  rule.is_active[] || return nothing
+  if t_now - rule.t_last_update[] < rule.Δt
     return nothing
   end
   effective_learning_rate = rule.learning_rate * rule.Δt
   covariance_now = rule.covariance_estimator.covariance_now
-  rule.t_last_update = t_now
+  rule.t_last_update[] = t_now
 
   @inbounds for j in 1:rule.synapses_post_pre.n_pre
     for i in 1:rule.synapses_post_pre.n_post
@@ -341,10 +346,11 @@ function plasticity_scaled_covariance_kernel!(
     dt::Float64,
     rule::PNN.RatePlasticityScaledCovariance,
   )
-  if t_now - rule.t_last_update < rule.Δt
+  rule.is_active[] || return nothing
+  if t_now - rule.t_last_update[] < rule.Δt
     return nothing
   end
-  rule.t_last_update = t_now
+  rule.t_last_update[] = t_now
   update_scaled_covariance_plasticity_kernel!(
     rule.synapses_post_pre.weights,
     rule.covariance_estimator.covariance_now,
@@ -365,12 +371,13 @@ function plasticity_quadratic_naive!(
     dt::Float64,
     rule::PNN.RatePlasticityCovarianceQuadraticallyStabilized,
   )
-  if t_now - rule.t_last_update < rule.Δt
+  rule.is_active[] || return nothing
+  if t_now - rule.t_last_update[] < rule.Δt
     return nothing
   end
   effective_learning_rate = rule.learning_rate * rule.Δt
   covariance_now = rule.covariance_estimator.covariance_now
-  rule.t_last_update = t_now
+  rule.t_last_update[] = t_now
 
   @inbounds for j in 1:rule.synapses_post_pre.n_pre
     for i in 1:rule.synapses_post_pre.n_post
@@ -417,10 +424,11 @@ function plasticity_quadratic_kernel!(
     dt::Float64,
     rule::PNN.RatePlasticityCovarianceQuadraticallyStabilized,
   )
-  if t_now - rule.t_last_update < rule.Δt
+  rule.is_active[] || return nothing
+  if t_now - rule.t_last_update[] < rule.Δt
     return nothing
   end
-  rule.t_last_update = t_now
+  rule.t_last_update[] = t_now
   update_quadratic_plasticity_kernel!(
     rule.synapses_post_pre.weights,
     rule.covariance_estimator.covariance_now,

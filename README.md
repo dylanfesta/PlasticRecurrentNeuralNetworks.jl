@@ -5,7 +5,8 @@
 [![Build Status](https://github.com/dylanfesta/PlasticRecurrentNeuralNetworks/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/dylanfesta/PlasticRecurrentNeuralNetworks/actions/workflows/CI.yml?query=branch%3Amain)
 
 
-Simulation of rate-based neural networks subject to plasticity based plasticity rules.
+Simulation of rate-based neural networks with reusable online estimators and
+plasticity rules that can be enabled or disabled during a run.
 
 > [!CAUTION]
 > This repository is still in active development. Check the examples in the documentation

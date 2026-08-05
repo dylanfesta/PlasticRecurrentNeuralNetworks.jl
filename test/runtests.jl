@@ -505,6 +505,53 @@ include("rate_inputs.jl")
     )
   end
 
+  @testset "Network estimator phase with inactive plasticity" begin
+    post_population = PNN.LinearRateNeuralPopulation(
+      PNN.ExcitatoryRateNeuron(1.0;rate_saturation=100.0),
+      1,
+      initial_rates=[2.0],
+    )
+    pre_population = PNN.LinearRateNeuralPopulation(
+      PNN.ExcitatoryRateNeuron(1.0;rate_saturation=100.0),
+      1,
+      initial_rates=[3.0],
+    )
+    post_mean = PNN.RateMeanEstimator(post_population,1.0,0.1)
+    pre_mean = PNN.RateMeanEstimator(pre_population,1.0,0.1)
+    covariance = PNN.RateCovarianceEstimator(post_mean,pre_mean)
+    synapse = PNN.RateLinearSynapses(ones(1,1))
+    rule = PNN.RatePlasticityCovariance(
+      post_population,
+      synapse,
+      pre_population,
+      0.1,
+      0.2,
+      covariance;
+      is_active=Ref(false),
+    )
+    network = PNN.RecurrentNetwork(
+      populations=(post_population,pre_population),
+      estimators=(post_mean,pre_mean,covariance),
+      plasticity_rules=(rule,),
+    )
+
+    @test PNN.RecurrentNetwork().estimators == ()
+    @test network.estimators === (post_mean,pre_mean,covariance)
+    @test PNN.dynamic_step!(0.0,0.01,network) == 0.01
+    input_factor = 1.0 - exp(-0.1)
+    @test isapprox(post_mean.mean_now,input_factor .* post_population.rates_now; rtol=1e-12)
+    @test isapprox(pre_mean.mean_now,input_factor .* pre_population.rates_now; rtol=1e-12)
+    expected_second_moment = input_factor .* (post_population.rates_now * pre_population.rates_now')
+    expected_covariance = expected_second_moment .- post_mean.mean_now * pre_mean.mean_now'
+    @test isapprox(covariance.second_moment_now,expected_second_moment; rtol=1e-12)
+    @test isapprox(covariance.covariance_now,expected_covariance; rtol=1e-12)
+    @test post_mean.t_last_update == 0.0
+    @test pre_mean.t_last_update == 0.0
+    @test covariance.t_last_update == 0.0
+    @test synapse.weights == ones(1,1)
+    @test rule.t_last_update[] == -Inf
+  end
+
   @testset "Rate plasticity update kernels" begin
     homeostatic_weights = [
       0.0  1.0
@@ -599,6 +646,7 @@ include("rate_inputs.jl")
       0.1;
       initial_mean=[1.0,5.0],
     )
+    active_ref = Ref(true)
     rule = PNN.RatePlasticityHomeostaticScaling(
       population,
       synapse,
@@ -609,19 +657,36 @@ include("rate_inputs.jl")
       mean_estimator;
       w_min=0.1,
       w_max=10.0,
+      is_active=active_ref,
     )
 
-    rule.t_last_update = 0.0
+    @test !ismutabletype(typeof(rule))
+    @test rule.is_active === active_ref
+    @test rule.is_active[]
+    initial_weights = copy(synapse.weights)
+    @test PNN.plasticity_off!(rule) === nothing
+    @test !rule.is_active[]
+    @test PNN.plasticity!(0.2,0.01,rule) === nothing
+    @test synapse.weights == initial_weights
+    @test rule.t_last_update[] == -Inf
+    @test PNN.plasticity_on!(rule) === nothing
+    @test rule.is_active[]
+    @test PNN.plasticity!(0.2,0.01,rule) === nothing
+    @test synapse.weights != initial_weights
+    @test rule.t_last_update[] == 0.2
+    copyto!(synapse.weights,initial_weights)
+
+    rule.t_last_update[] = 0.0
     @test PNN.plasticity!(0.1,0.01,rule) === nothing
     @test synapse.weights == [
       0.0  1.0
       2.0  0.0
     ]
-    @test rule.t_last_update == 0.0
+    @test rule.t_last_update[] == 0.0
 
     @test PNN.plasticity!(0.2,0.01,rule) === nothing
     @test isapprox(synapse.weights,[0.0 1.4; 0.4 0.0]; rtol=1e-12)
-    @test rule.t_last_update == 0.2
+    @test rule.t_last_update[] == 0.2
 
     synapse_small_dt = PNN.RateLinearSynapses([
       0.0  1.0
@@ -638,7 +703,8 @@ include("rate_inputs.jl")
       w_min=0.1,
       w_max=10.0,
     )
-    rule_small_dt.t_last_update = 0.0
+    @test rule_small_dt.is_active[]
+    rule_small_dt.t_last_update[] = 0.0
     @test PNN.plasticity!(0.1,0.01,rule_small_dt) === nothing
     @test isapprox(synapse_small_dt.weights,[0.0 1.2; 1.2 0.0]; rtol=1e-12)
     @test isapprox(
@@ -689,6 +755,7 @@ include("rate_inputs.jl")
       1.0  0.0  1.0
       2.0  3.0  4.0
     ])
+    active_ref = Ref(true)
     rule = PNN.RatePlasticityCovariance(
       post_population,
       synapse,
@@ -699,13 +766,26 @@ include("rate_inputs.jl")
       covariance_estimator;
       w_min=0.1,
       w_max=3.01,
+      is_active=active_ref,
     )
 
     @test rule.pop_pre === pre_population
     @test rule.pop_post === post_population
     @test rule.synapses_post_pre === synapse
     @test rule.covariance_estimator === covariance_estimator
-    @test rule.t_last_update == -Inf
+    @test !ismutabletype(typeof(rule))
+    @test rule.is_active === active_ref
+    @test rule.t_last_update[] == -Inf
+    initial_weights = copy(synapse.weights)
+    @test PNN.plasticity_off!(rule) === nothing
+    @test PNN.plasticity!(0.1,0.01,rule) === nothing
+    @test synapse.weights == initial_weights
+    @test rule.t_last_update[] == -Inf
+    @test PNN.plasticity_on!(rule) === nothing
+    @test PNN.plasticity!(0.1,0.01,rule) === nothing
+    @test synapse.weights != initial_weights
+    @test rule.t_last_update[] == 0.1
+    copyto!(synapse.weights,initial_weights)
 
     plain_rule = PNN.RatePlasticityCovariance(
       post_population,
@@ -713,24 +793,30 @@ include("rate_inputs.jl")
       pre_population,
       0.1,
       0.2,
-      covariance_estimator,
+      covariance_estimator;
+      is_active=active_ref,
     )
     @test plain_rule.α == 0.0
+    @test plain_rule.is_active[]
+    @test plain_rule.is_active === rule.is_active
+    PNN.plasticity_off!(plain_rule)
+    @test !rule.is_active[]
+    PNN.plasticity_on!(rule)
 
-    rule.t_last_update = 0.0
+    rule.t_last_update[] = 0.0
     @test PNN.plasticity!(0.05,0.01,rule) === nothing
     @test synapse.weights == [
       1.0  0.0  1.0
       2.0  3.0  4.0
     ]
-    @test rule.t_last_update == 0.0
+    @test rule.t_last_update[] == 0.0
 
     @test PNN.plasticity!(0.1,0.01,rule) === nothing
     @test isapprox(synapse.weights,[
       1.03  0.0   0.1
       2.0   3.01  3.01
     ]; rtol=1e-12)
-    @test rule.t_last_update == 0.1
+    @test rule.t_last_update[] == 0.1
 
     synapse_small_dt = PNN.RateLinearSynapses([
       1.0  0.0  1.0
@@ -747,7 +833,8 @@ include("rate_inputs.jl")
       w_min=0.1,
       w_max=10.0,
     )
-    rule_small_dt.t_last_update = 0.0
+    @test rule_small_dt.is_active[]
+    rule_small_dt.t_last_update[] = 0.0
     @test PNN.plasticity!(0.05,0.01,rule_small_dt) === nothing
     @test isapprox(
       synapse.weights[1,1] - 1.0,
@@ -810,6 +897,7 @@ include("rate_inputs.jl")
       1.0  0.0  1.0
       2.0  3.0  4.0
     ])
+    active_ref = Ref(true)
     rule = PNN.RatePlasticityScaledCovariance(
       post_population,
       synapse,
@@ -821,6 +909,7 @@ include("rate_inputs.jl")
       covariance_estimator;
       w_min=0.1,
       w_max=3.01,
+      is_active=active_ref,
     )
 
     @test rule.pop_pre === pre_population
@@ -828,7 +917,19 @@ include("rate_inputs.jl")
     @test rule.synapses_post_pre === synapse
     @test rule.covariance_estimator === covariance_estimator
     @test rule.scale_matrix === scale_matrix
-    @test rule.t_last_update == -Inf
+    @test !ismutabletype(typeof(rule))
+    @test rule.is_active === active_ref
+    @test rule.t_last_update[] == -Inf
+    initial_weights = copy(synapse.weights)
+    PNN.plasticity_off!(rule)
+    @test PNN.plasticity!(0.1,0.01,rule) === nothing
+    @test synapse.weights == initial_weights
+    @test rule.t_last_update[] == -Inf
+    PNN.plasticity_on!(rule)
+    @test PNN.plasticity!(0.1,0.01,rule) === nothing
+    @test synapse.weights != initial_weights
+    @test rule.t_last_update[] == 0.1
+    copyto!(synapse.weights,initial_weights)
 
     plain_rule = PNN.RatePlasticityScaledCovariance(
       post_population,
@@ -840,21 +941,22 @@ include("rate_inputs.jl")
       covariance_estimator,
     )
     @test plain_rule.α == 0.0
+    @test plain_rule.is_active[]
 
-    rule.t_last_update = 0.0
+    rule.t_last_update[] = 0.0
     @test PNN.plasticity!(0.05,0.01,rule) === nothing
     @test synapse.weights == [
       1.0  0.0  1.0
       2.0  3.0  4.0
     ]
-    @test rule.t_last_update == 0.0
+    @test rule.t_last_update[] == 0.0
 
     @test PNN.plasticity!(0.1,0.01,rule) === nothing
     @test isapprox(synapse.weights,[
       1.03   0.0   0.1
       2.0    3.01  3.01
     ]; rtol=1e-12)
-    @test rule.t_last_update == 0.1
+    @test rule.t_last_update[] == 0.1
 
     synapse_small_dt = PNN.RateLinearSynapses([
       1.0  0.0  1.0
@@ -872,7 +974,7 @@ include("rate_inputs.jl")
       w_min=0.1,
       w_max=10.0,
     )
-    rule_small_dt.t_last_update = 0.0
+    rule_small_dt.t_last_update[] = 0.0
     @test PNN.plasticity!(0.05,0.01,rule_small_dt) === nothing
     @test isapprox(
       synapse.weights[1,1] - 1.0,
@@ -944,6 +1046,7 @@ include("rate_inputs.jl")
       1.0  0.0  1.0
       2.0  3.0  4.0
     ])
+    active_ref = Ref(true)
     rule = PNN.RatePlasticityCovarianceQuadraticallyStabilized(
       post_population,
       synapse,
@@ -955,6 +1058,7 @@ include("rate_inputs.jl")
       covariance_estimator;
       w_min=0.1,
       w_max=3.01,
+      is_active=active_ref,
     )
 
     @test rule.pop_pre === pre_population
@@ -963,22 +1067,34 @@ include("rate_inputs.jl")
     @test rule.covariance_estimator === covariance_estimator
     @test rule.α1 == -0.5
     @test rule.α2 == 0.25
-    @test rule.t_last_update == -Inf
+    @test !ismutabletype(typeof(rule))
+    @test rule.is_active === active_ref
+    @test rule.t_last_update[] == -Inf
+    initial_weights = copy(synapse.weights)
+    PNN.plasticity_off!(rule)
+    @test PNN.plasticity!(0.1,0.01,rule) === nothing
+    @test synapse.weights == initial_weights
+    @test rule.t_last_update[] == -Inf
+    PNN.plasticity_on!(rule)
+    @test PNN.plasticity!(0.1,0.01,rule) === nothing
+    @test synapse.weights != initial_weights
+    @test rule.t_last_update[] == 0.1
+    copyto!(synapse.weights,initial_weights)
 
-    rule.t_last_update = 0.0
+    rule.t_last_update[] = 0.0
     @test PNN.plasticity!(0.05,0.01,rule) === nothing
     @test synapse.weights == [
       1.0  0.0  1.0
       2.0  3.0  4.0
     ]
-    @test rule.t_last_update == 0.0
+    @test rule.t_last_update[] == 0.0
 
     @test PNN.plasticity!(0.1,0.01,rule) === nothing
     @test isapprox(synapse.weights,[
       0.985  0.0   2.005
       2.015  3.01  3.01
     ]; rtol=1e-12)
-    @test rule.t_last_update == 0.1
+    @test rule.t_last_update[] == 0.1
 
     synapse_small_dt = PNN.RateLinearSynapses([
       1.0  0.0  1.0
@@ -996,7 +1112,8 @@ include("rate_inputs.jl")
       w_min=0.1,
       w_max=10.0,
     )
-    rule_small_dt.t_last_update = 0.0
+    @test rule_small_dt.is_active[]
+    rule_small_dt.t_last_update[] = 0.0
     @test PNN.plasticity!(0.05,0.01,rule_small_dt) === nothing
     @test isapprox(
       synapse.weights[1,1] - 1.0,

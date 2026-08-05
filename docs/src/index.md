@@ -11,7 +11,7 @@ rate models.
 ## Contents
 
 ```@contents
-Pages = ["rate-models.md", "topology-utilities.md"]
+Pages = ["rate-models.md", "rate-plasticity.md", "topology-utilities.md"]
 Depth = 2
 ```
 

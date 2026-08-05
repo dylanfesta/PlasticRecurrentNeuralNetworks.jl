@@ -19,8 +19,9 @@ using SparseArrays
 - 1. clean up internal states
 - 2. forward signals
 - 3. local updates
-- 4. plasticity
-- 5. recorders
+- 4. estimator updates
+- 5. plasticity
+- 6. recorders
 
 =#
 
@@ -53,6 +54,7 @@ include("topology_utility_functions.jl")
 
 include("rate_models.jl")
 include("rate_inputs.jl")
+include("rate_plasticity.jl")
 
 # WARNING: currently focusing on rate models and rate plasticity only
 # IF neurons will be implemented later
@@ -68,16 +70,21 @@ include("rate_inputs.jl")
 # # recorders
 # include("recorders.jl")
 
-# big ugly type
-# population is a tuple of all populations with internal states that need a clean up and a local update
-# connections is a tuple of tuples in the form (population_post,synapse_post_pre,population_pre),
-# or (population_post,input)
-# where I call forward_signal!(t_now,dt,population_post,synapse_post_pre,population_pre)
-# recorders is a tuple of all recorders, where I call record!(t_now,recorder)
+"""
+    RecurrentNetwork(; populations=(), connections=(), estimators=(),
+                     plasticity_rules=(), recorders=())
+
+Components advanced by [`dynamic_step!`](@ref).
+
+`estimators` are updated once per network step after the neural populations and
+before plasticity. Supply each estimator once and order mean estimators before
+covariance estimators that depend on them.
+"""
 
 Base.@kwdef struct RecurrentNetwork
   populations::Tuple        = ()
   connections::Tuple        = ()
+  estimators::Tuple         = ()
   plasticity_rules::Tuple   = ()
   recorders::Tuple          = ()
 end
@@ -139,6 +146,7 @@ function dynamic_step!(t_now::Float64,dt::Float64,rn::RecurrentNetwork)
   call_clean_up!(rn.populations) # clean up inputs
   call_forward_signal!(t_now,dt,rn.connections) # forward signals
   call_local_update!(t_now,dt,rn.populations) # local updates
+  call_local_update!(t_now,dt,rn.estimators) # estimator updates
   call_plasticity!(t_now,dt,rn.plasticity_rules) # plasticity
   call_recorders!(t_now,rn.recorders) # recorders
   return t_now + dt

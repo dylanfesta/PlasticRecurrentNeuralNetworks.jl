@@ -20,6 +20,7 @@ makedocs(;
     pages=[
         "Home" => "index.md",
         "Rate Models" => "rate-models.md",
+        "Rate Plasticity" => "rate-plasticity.md",
         "Topology Utilities" => "topology-utilities.md",
     ],
 )
