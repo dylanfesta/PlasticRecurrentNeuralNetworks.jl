@@ -4,44 +4,10 @@ using Random
 using Statistics
 using Test
 
+include("rate_inputs.jl")
+
 @testset "PlasticRecurrentNeuralNetworks.jl" begin
   PNN = PlasticRecurrentNeuralNetworks
-
-  @testset "RateNoisyHomogeneousInput statistics" begin
-    Random.seed!(1234)
-
-    dt = 1e-3
-    t_end = 5.0
-    t_warmup = 1.0
-    tau = 0.1
-    mu = 20.0
-    sigma = 3.0
-    n = 200
-
-    population = PNN.LinearRateNeuralPopulation(
-      PNN.ExcitatoryRateNeuron(tau;rate_saturation=100.0),
-      n,
-      initial_rates=0.0,
-    )
-    input = PNN.RateNoisyHomogeneousInput(n,mu,sigma)
-    rec = PNN.RCRate(population,t_end,dt)
-    network = PNN.RecurrentNetwork(
-      populations=(population,),
-      connections=((population,input),),
-      recorders=(rec,),
-    )
-
-    t_now = 0.0
-    while t_now <= t_end
-      t_now = PNN.dynamic_step!(t_now,dt,network)
-    end
-
-    content = PNN.get_content(rec)
-    rates = vec(content.rates[content.times .> t_warmup,:])
-
-    @test isapprox(mean(rates),mu; atol=0.1)
-    @test isapprox(std(rates),sigma; rtol=0.05)
-  end
 
   @testset "Excitatory self connection fixed points" begin
     dt = 1e-3

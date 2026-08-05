@@ -52,6 +52,7 @@ abstract type Recorder end # RC
 include("topology_utility_functions.jl")
 
 include("rate_models.jl")
+include("rate_inputs.jl")
 
 # WARNING: currently focusing on rate models and rate plasticity only
 # IF neurons will be implemented later

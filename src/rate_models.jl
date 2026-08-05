@@ -24,14 +24,6 @@ Concrete populations store the current rate vector and per-step work buffers.
 abstract type RateNeuralPopulation <: NeuralPopulation end  # RNP
 
 """
-    RateInput
-
-Abstract parent for external inputs that add current or drive to rate
-populations during `forward_signal!`.
-"""
-abstract type RateInput <: Input end  #  RIN
-
-"""
     RateSynapses
 
 Abstract parent for synaptic operators between rate populations.
@@ -170,63 +162,6 @@ end
 
 
 """
-    RateNoisyHomogeneousInput
-
-Homogeneous Gaussian input source for rate populations.
-
-Each call to `forward_signal!` samples one standard normal variate per neuron
-into `rand_alloc`, then adds a drive with mean `μ` and noise scale chosen so the
-linear Euler update has stationary standard deviation approximately `σ`.
-"""
-struct RateNoisyHomogeneousInput <: RateInput
-  n::Int64
-  μ::Float64
-  σ::Float64
-  rand_alloc::Vector{Float64}
-end
-
-"""
-    RateNoisyHomogeneousInput(n, μ, σ)
-
-Create a noisy homogeneous input for `n` target neurons.
-
-The random buffer is allocated once and reused on every `forward_signal!` call.
-"""
-function RateNoisyHomogeneousInput(n::Int64,μ::Float64,σ::Float64)
-    return RateNoisyHomogeneousInput(
-        n,
-        μ,
-        σ,
-        fill(NaN,n)
-    )
-end 
-
-# forward signal, input into the rate population
-
-
-"""
-    forward_signal!(t_now, dt, rnp, inp::RateNoisyHomogeneousInput) -> nothing
-
-Add one noisy homogeneous input sample to `rnp.input_alloc`.
-
-The time argument is currently unused. The noise scale depends on the target
-population time constant and on the neural integration step `dt`.
-"""
-function forward_signal!(t_now::Float64,dt::Float64,rnp::RateNeuralPopulation,inp::RateNoisyHomogeneousInput)
-  # sample Gaussian noise for each neuron N(0,1)
-  randn!(inp.rand_alloc)
-  
-  # Scale the input noise so the stationary rate variance after the Euler
-  # update is inp.σ^2.
-  _noise_scale_factor = sqrt(2 * rnp.neuron_type.τ / dt - 1) * inp.σ
-  @inbounds @simd for i in 1:inp.n
-    rnp.input_alloc[i] += inp.μ + _noise_scale_factor * inp.rand_alloc[i]
-  end
-  return nothing
-end
- 
-
-"""
     local_update!(t_now, dt, rnp::LinearRateNeuralPopulation) -> nothing
 
 Advance the population rates by one Euler step.
@@ -256,63 +191,6 @@ function local_update!(t_now::Float64,dt::Float64,rnp::LinearRateNeuralPopulatio
 end
 
 
-"""
-    RateFixedInput
-
-Deterministic external input for rate populations.
-
-The `input` vector is added elementwise to a population's `input_alloc` on each
-`forward_signal!` call.
-"""
-struct RateFixedInput <: RateInput
-  n::Int64
-  input::Vector{Float64}
-end
-
-"""
-    RateFixedInput(input_vals)
-
-Create a fixed input from a vector of per-neuron values.
-
-The supplied vector is stored directly.
-"""
-function RateFixedInput(input_vals::Vector{Float64})
-  n = length(input_vals)
-  return RateFixedInput(
-    n,
-    input_vals
-  )
-end 
-
-"""
-    RateFixedInput(n, input)
-
-Create a fixed input of length `n` whose entries are all `input`.
-"""
-function RateFixedInput(n::Int64,input::Float64)
-  input_vec = fill(input,n)
-  return RateFixedInput(
-    n,
-    input_vec
-  )
-end 
-
-
-"""
-    forward_signal!(t_now, dt, rnp, inp::RateFixedInput) -> nothing
-
-Add the fixed input vector to `rnp.input_alloc`.
-
-The time and step-size arguments are accepted for the common `forward_signal!`
-interface and are not otherwise used.
-"""
-function forward_signal!(t_now::Float64,dt::Float64,rnp::RateNeuralPopulation,inp::RateFixedInput)
-  @inbounds @simd for i in 1:inp.n
-    rnp.input_alloc[i] += inp.input[i]
-  end
-  return nothing
-end
-  
 #############################
 # ====== Synapses ========= #
 #############################
