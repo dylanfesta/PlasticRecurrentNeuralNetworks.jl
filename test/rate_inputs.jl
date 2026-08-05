@@ -49,8 +49,12 @@ end
     population = PNNRateInputs.LinearRateNeuralPopulation(
       PNNRateInputs.ExcitatoryRateNeuron(0.1),2,
     )
+    input = PNNRateInputs.RateNoisyHomogeneousInput(2,50.0,3.0)
     expected_scale = 3.0 * sqrt(2.0 * 0.1 / 0.05 - 1.0)
     @test PNNRateInputs._rate_noise_scale(population,0.05,3.0) == expected_scale
+    @test isapprox(PNNRateInputs.noise_scale(input,0.05,population),expected_scale)
+    @test_throws ArgumentError PNNRateInputs.noise_scale(input,0.0,population)
+    @test_throws ArgumentError PNNRateInputs.noise_scale(input,0.2,population)
     @test_throws ArgumentError PNNRateInputs._rate_noise_scale(population,0.0,3.0)
     @test_throws ArgumentError PNNRateInputs._rate_noise_scale(population,0.2,3.0)
     @test_throws ArgumentError PNNRateInputs.RateNoisyHomogeneousInput(-1,50.0,2.0)

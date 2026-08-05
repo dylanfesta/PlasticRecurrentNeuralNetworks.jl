@@ -99,6 +99,18 @@ function RateNoisyHomogeneousInput(n::Int64,μ::Float64,σ::Float64)
 end
 
 """
+    noise_scale(inp::RateNoisyHomogeneousInput, dt, rnp::RateNeuralPopulation)
+
+Return the standard deviation of the Gaussian drive added to the population
+input at each numerical time step. This is the actual noise scale used by
+`forward_signal!`; `inp.σ` is the resulting stationary rate standard deviation.
+"""
+function noise_scale(
+    inp::RateNoisyHomogeneousInput,dt::Float64,rnp::RateNeuralPopulation)
+  return _rate_noise_scale(rnp,dt,inp.σ)
+end
+
+"""
     forward_signal!(t_now, dt, rnp, inp::RateNoisyHomogeneousInput) -> nothing
 
 Add one independent Gaussian input sample to `rnp.input_alloc`.
@@ -106,9 +118,9 @@ Add one independent Gaussian input sample to `rnp.input_alloc`.
 function forward_signal!(t_now::Float64,dt::Float64,rnp::RateNeuralPopulation,inp::RateNoisyHomogeneousInput)
   _check_rate_input_dimension(rnp,inp.n)
   randn!(inp.rand_alloc)
-  noise_scale = _rate_noise_scale(rnp,dt,inp.σ)
+  input_noise_scale = noise_scale(inp,dt,rnp)
   @inbounds @simd for i in 1:inp.n
-    rnp.input_alloc[i] += inp.μ + noise_scale * inp.rand_alloc[i]
+    rnp.input_alloc[i] += inp.μ + input_noise_scale * inp.rand_alloc[i]
   end
   return nothing
 end
