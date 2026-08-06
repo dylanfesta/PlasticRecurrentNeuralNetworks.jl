@@ -579,15 +579,30 @@ include("rate_inputs.jl")
     @test PNN._update_covariance_plasticity!(
       covariance_weights,
       covariance,
+      [0.5,1.0,1.5],
+      [10.0,20.0],
       0.5,
       0.02,
       0.1,
       3.01,
     ) === nothing
     @test isapprox(covariance_weights,[
-      1.03  0.0   0.1
-      2.0   3.01  3.01
+      1.09  0.0   0.1
+      2.11  3.01  3.01
     ]; rtol=1e-12)
+
+    zero_B_weights = ones(2,3)
+    @test PNN._update_covariance_plasticity!(
+      zero_B_weights,
+      covariance,
+      fill(NaN,3),
+      fill(NaN,2),
+      0.0,
+      0.02,
+      -Inf,
+      Inf,
+    ) === nothing
+    @test isapprox(zero_B_weights,ones(2,3) .+ 0.02 .* covariance; rtol=1e-12)
 
     scaled_weights = [
       1.0  0.0  1.0
@@ -601,15 +616,35 @@ include("rate_inputs.jl")
       scaled_weights,
       covariance,
       scale_matrix,
-      0.5,
+      [0.5,1.0,1.5],
+      [10.0,20.0],
+      -0.5,
       0.02,
       0.1,
       3.01,
     ) === nothing
     @test isapprox(scaled_weights,[
-      1.03   0.0   0.1
-      2.0    3.01  3.01
+      0.99   0.0   0.1
+      1.955  2.49  3.01
     ]; rtol=1e-12)
+
+    zero_B_scaled_weights = ones(2,3)
+    @test PNN._update_scaled_covariance_plasticity!(
+      zero_B_scaled_weights,
+      covariance,
+      scale_matrix,
+      fill(NaN,3),
+      fill(NaN,2),
+      -0.0,
+      0.02,
+      -Inf,
+      Inf,
+    ) === nothing
+    @test isapprox(
+      zero_B_scaled_weights,
+      ones(2,3) .+ 0.02 .* scale_matrix .* covariance;
+      rtol=1e-12,
+    )
 
     quadratic_weights = [
       1.0  0.0  1.0
@@ -741,8 +776,18 @@ include("rate_inputs.jl")
       3,
       initial_rates=[3.0,4.0,5.0],
     )
-    post_mean_estimator = PNN.RateMeanEstimator(post_population,1.0,0.1)
-    pre_mean_estimator = PNN.RateMeanEstimator(pre_population,1.0,0.1)
+    post_mean_estimator = PNN.RateMeanEstimator(
+      post_population,
+      1.0,
+      0.1;
+      initial_mean=[10.0,20.0],
+    )
+    pre_mean_estimator = PNN.RateMeanEstimator(
+      pre_population,
+      1.0,
+      0.1;
+      initial_mean=[0.5,1.0,1.5],
+    )
     covariance_estimator = PNN.RateCovarianceEstimator(
       post_mean_estimator,
       pre_mean_estimator,
@@ -773,6 +818,7 @@ include("rate_inputs.jl")
     @test rule.pop_post === post_population
     @test rule.synapses_post_pre === synapse
     @test rule.covariance_estimator === covariance_estimator
+    @test rule.B == 0.5
     @test !ismutabletype(typeof(rule))
     @test rule.is_active === active_ref
     @test rule.t_last_update[] == -Inf
@@ -796,7 +842,7 @@ include("rate_inputs.jl")
       covariance_estimator;
       is_active=active_ref,
     )
-    @test plain_rule.α == 0.0
+    @test plain_rule.B == 0.0
     @test plain_rule.is_active[]
     @test plain_rule.is_active === rule.is_active
     PNN.plasticity_off!(plain_rule)
@@ -813,8 +859,8 @@ include("rate_inputs.jl")
 
     @test PNN.plasticity!(0.1,0.01,rule) === nothing
     @test isapprox(synapse.weights,[
-      1.03  0.0   0.1
-      2.0   3.01  3.01
+      1.09  0.0   0.1
+      2.11  3.01  3.01
     ]; rtol=1e-12)
     @test rule.t_last_update[] == 0.1
 
@@ -841,6 +887,25 @@ include("rate_inputs.jl")
       2 * (synapse_small_dt.weights[1,1] - 1.0);
       rtol=1e-12,
     )
+
+    transposed_synapse = PNN.RateLinearSynapses(ones(3,2))
+    transposed_rule = PNN.RatePlasticityCovariance(
+      pre_population,
+      transposed_synapse,
+      post_population,
+      1.0,
+      0.1,
+      1.0,
+      PNN.CovarianceTransposed(covariance_estimator);
+      w_min=-Inf,
+      w_max=Inf,
+    )
+    @test PNN.plasticity!(0.0,0.01,transposed_rule) === nothing
+    @test isapprox(transposed_synapse.weights,[
+       1.7   2.05
+       1.9   3.15
+      -7.5   3.8
+    ]; rtol=1e-12)
 
     swapped_covariance_estimator = PNN.RateCovarianceEstimator(
       pre_mean_estimator,
@@ -879,8 +944,18 @@ include("rate_inputs.jl")
       3,
       initial_rates=[3.0,4.0,5.0],
     )
-    post_mean_estimator = PNN.RateMeanEstimator(post_population,1.0,0.1)
-    pre_mean_estimator = PNN.RateMeanEstimator(pre_population,1.0,0.1)
+    post_mean_estimator = PNN.RateMeanEstimator(
+      post_population,
+      1.0,
+      0.1;
+      initial_mean=[10.0,20.0],
+    )
+    pre_mean_estimator = PNN.RateMeanEstimator(
+      pre_population,
+      1.0,
+      0.1;
+      initial_mean=[0.5,1.0,1.5],
+    )
     covariance_estimator = PNN.RateCovarianceEstimator(
       post_mean_estimator,
       pre_mean_estimator,
@@ -903,7 +978,7 @@ include("rate_inputs.jl")
       synapse,
       pre_population,
       scale_matrix,
-      0.5,
+      -0.5,
       0.1,
       0.2,
       covariance_estimator;
@@ -917,6 +992,7 @@ include("rate_inputs.jl")
     @test rule.synapses_post_pre === synapse
     @test rule.covariance_estimator === covariance_estimator
     @test rule.scale_matrix === scale_matrix
+    @test rule.B == -0.5
     @test !ismutabletype(typeof(rule))
     @test rule.is_active === active_ref
     @test rule.t_last_update[] == -Inf
@@ -940,7 +1016,7 @@ include("rate_inputs.jl")
       0.2,
       covariance_estimator,
     )
-    @test plain_rule.α == 0.0
+    @test plain_rule.B == 0.0
     @test plain_rule.is_active[]
 
     rule.t_last_update[] = 0.0
@@ -953,8 +1029,8 @@ include("rate_inputs.jl")
 
     @test PNN.plasticity!(0.1,0.01,rule) === nothing
     @test isapprox(synapse.weights,[
-      1.03   0.0   0.1
-      2.0    3.01  3.01
+      0.99   0.0   0.1
+      1.955  2.49  3.01
     ]; rtol=1e-12)
     @test rule.t_last_update[] == 0.1
 
@@ -967,7 +1043,7 @@ include("rate_inputs.jl")
       synapse_small_dt,
       pre_population,
       scale_matrix,
-      0.5,
+      -0.5,
       0.05,
       0.2,
       covariance_estimator;
@@ -981,6 +1057,31 @@ include("rate_inputs.jl")
       2 * (synapse_small_dt.weights[1,1] - 1.0);
       rtol=1e-12,
     )
+
+    transposed_scale = [
+       1.0  2.0
+       0.5  0.0
+      -1.0  0.25
+    ]
+    transposed_synapse = PNN.RateLinearSynapses(ones(3,2))
+    transposed_rule = PNN.RatePlasticityScaledCovariance(
+      pre_population,
+      transposed_synapse,
+      post_population,
+      transposed_scale,
+      1.0,
+      0.1,
+      1.0,
+      PNN.CovarianceTransposed(covariance_estimator);
+      w_min=-Inf,
+      w_max=Inf,
+    )
+    @test PNN.plasticity!(0.0,0.01,transposed_rule) === nothing
+    @test isapprox(transposed_synapse.weights,[
+      1.7   3.1
+      1.45  1.0
+      9.5   1.7
+    ]; rtol=1e-12)
 
     swapped_covariance_estimator = PNN.RateCovarianceEstimator(
       pre_mean_estimator,

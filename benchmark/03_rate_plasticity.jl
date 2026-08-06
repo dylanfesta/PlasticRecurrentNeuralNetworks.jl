@@ -24,7 +24,7 @@ const dt_rate = 1E-3
 const Δt_plasticity = 10E-3
 const learning_rate = 0.2
 const α_homeostatic = 0.8
-const α_covariance = 0.05
+const B_covariance = 0.5
 const α1_quadratic = -0.4
 const α2_quadratic = 0.1
 const w_min = 1E-8
@@ -55,7 +55,12 @@ post_mean_estimator = PNN.RateMeanEstimator(
   Δt_plasticity;
   initial_mean=rand(n_post),
 )
-pre_mean_estimator = PNN.RateMeanEstimator(pre_population,100E-3,Δt_plasticity)
+pre_mean_estimator = PNN.RateMeanEstimator(
+  pre_population,
+  100E-3,
+  Δt_plasticity;
+  initial_mean=rand(n_pre),
+)
 covariance_estimator = PNN.RateCovarianceEstimator(post_mean_estimator,pre_mean_estimator)
 covariance_estimator.covariance_now .= 0.2 .* randn(n_post,n_pre)
 
@@ -67,6 +72,8 @@ scale_matrix[rand(n_post,n_pre) .< 0.1] .= 0.0
 homeostatic_synapse = PNN.RateLinearSynapses(copy(initial_weights))
 covariance_synapse = PNN.RateLinearSynapses(copy(initial_weights))
 scaled_covariance_synapse = PNN.RateLinearSynapses(copy(initial_weights))
+covariance_zero_synapse = PNN.RateLinearSynapses(copy(initial_weights))
+scaled_covariance_zero_synapse = PNN.RateLinearSynapses(copy(initial_weights))
 quadratic_synapse = PNN.RateLinearSynapses(copy(initial_weights))
 
 homeostatic_rule = PNN.RatePlasticityHomeostaticScaling(
@@ -85,7 +92,7 @@ covariance_rule = PNN.RatePlasticityCovariance(
   post_population,
   covariance_synapse,
   pre_population,
-  α_covariance,
+  B_covariance,
   Δt_plasticity,
   learning_rate,
   covariance_estimator;
@@ -98,7 +105,32 @@ scaled_covariance_rule = PNN.RatePlasticityScaledCovariance(
   scaled_covariance_synapse,
   pre_population,
   scale_matrix,
-  α_covariance,
+  B_covariance,
+  Δt_plasticity,
+  learning_rate,
+  covariance_estimator;
+  w_min=w_min,
+  w_max=w_max,
+)
+
+covariance_zero_rule = PNN.RatePlasticityCovariance(
+  post_population,
+  covariance_zero_synapse,
+  pre_population,
+  0.0,
+  Δt_plasticity,
+  learning_rate,
+  covariance_estimator;
+  w_min=w_min,
+  w_max=w_max,
+)
+
+scaled_covariance_zero_rule = PNN.RatePlasticityScaledCovariance(
+  post_population,
+  scaled_covariance_zero_synapse,
+  pre_population,
+  scale_matrix,
+  0.0,
   Δt_plasticity,
   learning_rate,
   covariance_estimator;
@@ -208,8 +240,8 @@ function plasticity_homeostatic_kernel!(
 end
 
 # Naive covariance rule:
-#   Add an affine function of covariance to each positive weight:
-#     W <- clamp(W + ηΔt * (C - α)).
+#   Add covariance and the scaled mean product to each positive weight:
+#     W <- clamp(W + ηΔt * (C + B * μ_post * μ_pre)).
 #   This version reads the weights and covariance through the rule object inside
 #   the nested loop.
 function plasticity_covariance_naive!(
@@ -223,6 +255,8 @@ function plasticity_covariance_naive!(
   end
   effective_learning_rate = rule.learning_rate * rule.Δt
   covariance_now = rule.covariance_estimator.covariance_now
+  rates_pre = rule.covariance_estimator.mean_pre_estimator.mean_now
+  rates_post = rule.covariance_estimator.mean_post_estimator.mean_now
   rule.t_last_update[] = t_now
 
   @inbounds for j in 1:rule.synapses_post_pre.n_pre
@@ -231,7 +265,8 @@ function plasticity_covariance_naive!(
       if w_old == 0.0
         continue
       end
-      w_new = w_old + effective_learning_rate * (covariance_now[i,j] - rule.α)
+      w_new = w_old + effective_learning_rate *
+        (covariance_now[i,j] + rule.B * rates_post[i] * rates_pre[j])
       rule.synapses_post_pre.weights[i,j] = clamp(w_new,rule.w_min,rule.w_max)
     end
   end
@@ -244,19 +279,35 @@ end
 function update_covariance_plasticity_kernel!(
     weights::Matrix{Float64},
     covariance_now::Matrix{Float64},
-    α::Float64,
+    rates_pre::Vector{Float64},
+    rates_post::Vector{Float64},
+    B::Float64,
     effective_learning_rate::Float64,
     w_min::Float64,
     w_max::Float64,
   )
   n_post,n_pre = size(weights)
+  if B == 0.0
+    @inbounds for j in 1:n_pre
+      for i in 1:n_post
+        w_old = weights[i,j]
+        if w_old == 0.0
+          continue
+        end
+        w_new = w_old + effective_learning_rate * covariance_now[i,j]
+        weights[i,j] = clamp(w_new,w_min,w_max)
+      end
+    end
+    return nothing
+  end
   @inbounds for j in 1:n_pre
     for i in 1:n_post
       w_old = weights[i,j]
       if w_old == 0.0
         continue
       end
-      w_new = w_old + effective_learning_rate * (covariance_now[i,j] - α)
+      w_new = w_old + effective_learning_rate *
+        (covariance_now[i,j] + B * rates_post[i] * rates_pre[j])
       weights[i,j] = clamp(w_new,w_min,w_max)
     end
   end
@@ -276,7 +327,9 @@ function plasticity_covariance_kernel!(
   update_covariance_plasticity_kernel!(
     rule.synapses_post_pre.weights,
     rule.covariance_estimator.covariance_now,
-    rule.α,
+    rule.covariance_estimator.mean_pre_estimator.mean_now,
+    rule.covariance_estimator.mean_post_estimator.mean_now,
+    rule.B,
     rule.learning_rate * rule.Δt,
     rule.w_min,
     rule.w_max,
@@ -298,6 +351,8 @@ function plasticity_scaled_covariance_naive!(
   end
   effective_learning_rate = rule.learning_rate * rule.Δt
   covariance_now = rule.covariance_estimator.covariance_now
+  rates_pre = rule.covariance_estimator.mean_pre_estimator.mean_now
+  rates_post = rule.covariance_estimator.mean_post_estimator.mean_now
   rule.t_last_update[] = t_now
 
   @inbounds for j in 1:rule.synapses_post_pre.n_pre
@@ -307,7 +362,8 @@ function plasticity_scaled_covariance_naive!(
       if (w_old == 0.0) || (scale == 0.0)
         continue
       end
-      w_new = w_old + effective_learning_rate * scale * (covariance_now[i,j] - rule.α)
+      w_new = w_old + effective_learning_rate * scale *
+        (covariance_now[i,j] + rule.B * rates_post[i] * rates_pre[j])
       rule.synapses_post_pre.weights[i,j] = clamp(w_new,rule.w_min,rule.w_max)
     end
   end
@@ -321,12 +377,28 @@ function update_scaled_covariance_plasticity_kernel!(
     weights::Matrix{Float64},
     covariance_now::Matrix{Float64},
     scale_matrix::Matrix{Float64},
-    α::Float64,
+    rates_pre::Vector{Float64},
+    rates_post::Vector{Float64},
+    B::Float64,
     effective_learning_rate::Float64,
     w_min::Float64,
     w_max::Float64,
   )
   n_post,n_pre = size(weights)
+  if B == 0.0
+    @inbounds for j in 1:n_pre
+      for i in 1:n_post
+        w_old = weights[i,j]
+        scale = scale_matrix[i,j]
+        if (w_old == 0.0) || (scale == 0.0)
+          continue
+        end
+        w_new = w_old + effective_learning_rate * scale * covariance_now[i,j]
+        weights[i,j] = clamp(w_new,w_min,w_max)
+      end
+    end
+    return nothing
+  end
   @inbounds for j in 1:n_pre
     for i in 1:n_post
       w_old = weights[i,j]
@@ -334,7 +406,8 @@ function update_scaled_covariance_plasticity_kernel!(
       if (w_old == 0.0) || (scale == 0.0)
         continue
       end
-      w_new = w_old + effective_learning_rate * scale * (covariance_now[i,j] - α)
+      w_new = w_old + effective_learning_rate * scale *
+        (covariance_now[i,j] + B * rates_post[i] * rates_pre[j])
       weights[i,j] = clamp(w_new,w_min,w_max)
     end
   end
@@ -355,7 +428,9 @@ function plasticity_scaled_covariance_kernel!(
     rule.synapses_post_pre.weights,
     rule.covariance_estimator.covariance_now,
     rule.scale_matrix,
-    rule.α,
+    rule.covariance_estimator.mean_pre_estimator.mean_now,
+    rule.covariance_estimator.mean_post_estimator.mean_now,
+    rule.B,
     rule.learning_rate * rule.Δt,
     rule.w_min,
     rule.w_max,
@@ -464,6 +539,20 @@ reset_rule_state!(scaled_covariance_rule,initial_weights)
 plasticity_scaled_covariance_kernel!(t_benchmark,dt_rate,scaled_covariance_rule)
 @assert isapprox(scaled_covariance_rule.synapses_post_pre.weights,scaled_covariance_naive_weights;rtol=1e-12,atol=1e-12)
 
+reset_rule_state!(covariance_zero_rule,initial_weights)
+plasticity_covariance_naive!(t_benchmark,dt_rate,covariance_zero_rule)
+covariance_zero_naive_weights = copy(covariance_zero_rule.synapses_post_pre.weights)
+reset_rule_state!(covariance_zero_rule,initial_weights)
+plasticity_covariance_kernel!(t_benchmark,dt_rate,covariance_zero_rule)
+@assert isapprox(covariance_zero_rule.synapses_post_pre.weights,covariance_zero_naive_weights;rtol=1e-12,atol=1e-12)
+
+reset_rule_state!(scaled_covariance_zero_rule,initial_weights)
+plasticity_scaled_covariance_naive!(t_benchmark,dt_rate,scaled_covariance_zero_rule)
+scaled_covariance_zero_naive_weights = copy(scaled_covariance_zero_rule.synapses_post_pre.weights)
+reset_rule_state!(scaled_covariance_zero_rule,initial_weights)
+plasticity_scaled_covariance_kernel!(t_benchmark,dt_rate,scaled_covariance_zero_rule)
+@assert isapprox(scaled_covariance_zero_rule.synapses_post_pre.weights,scaled_covariance_zero_naive_weights;rtol=1e-12,atol=1e-12)
+
 reset_rule_state!(quadratic_rule,initial_weights)
 plasticity_quadratic_naive!(t_benchmark,dt_rate,quadratic_rule)
 quadratic_naive_weights = copy(quadratic_rule.synapses_post_pre.weights)
@@ -502,6 +591,26 @@ println()
 println("SELECTED FOR PACKAGE - scaled covariance plasticity function-barrier kernel")
 scaled_covariance_kernel_trial = @benchmark plasticity_scaled_covariance_kernel!($t_benchmark,$dt_rate,$scaled_covariance_rule) setup=(reset_rule_state!($scaled_covariance_rule,$initial_weights)) evals=1
 display(scaled_covariance_kernel_trial)
+println()
+
+println("Covariance plasticity with B = 0 - always-general object-field loop")
+covariance_zero_naive_trial = @benchmark plasticity_covariance_naive!($t_benchmark,$dt_rate,$covariance_zero_rule) setup=(reset_rule_state!($covariance_zero_rule,$initial_weights)) evals=1
+display(covariance_zero_naive_trial)
+println()
+
+println("SELECTED FOR PACKAGE - covariance plasticity specialized B = 0 kernel")
+covariance_zero_kernel_trial = @benchmark plasticity_covariance_kernel!($t_benchmark,$dt_rate,$covariance_zero_rule) setup=(reset_rule_state!($covariance_zero_rule,$initial_weights)) evals=1
+display(covariance_zero_kernel_trial)
+println()
+
+println("Scaled covariance plasticity with B = 0 - always-general object-field loop")
+scaled_covariance_zero_naive_trial = @benchmark plasticity_scaled_covariance_naive!($t_benchmark,$dt_rate,$scaled_covariance_zero_rule) setup=(reset_rule_state!($scaled_covariance_zero_rule,$initial_weights)) evals=1
+display(scaled_covariance_zero_naive_trial)
+println()
+
+println("SELECTED FOR PACKAGE - scaled covariance plasticity specialized B = 0 kernel")
+scaled_covariance_zero_kernel_trial = @benchmark plasticity_scaled_covariance_kernel!($t_benchmark,$dt_rate,$scaled_covariance_zero_rule) setup=(reset_rule_state!($scaled_covariance_zero_rule,$initial_weights)) evals=1
+display(scaled_covariance_zero_kernel_trial)
 println()
 
 println("Quadratically stabilized covariance plasticity - naive object-field loop")

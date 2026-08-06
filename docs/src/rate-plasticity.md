@@ -13,10 +13,12 @@ it using `plasticity_off!` and `plasticity_on!`:
 
 ```julia
 active = Ref(false)
+B = -0.25
 rule = RatePlasticityCovariance(
     post_population,
     synapses_post_pre,
     pre_population,
+    B,
     0.01,
     0.2,
     covariance_estimator;
@@ -26,6 +28,11 @@ rule = RatePlasticityCovariance(
 plasticity_on!(rule)
 plasticity_off!(rule)
 ```
+
+Covariance rules use the running means owned by their covariance estimator:
+`C_post_pre + B * μ_post * μ_pre`. The scaled variant multiplies this entire
+quantity by its `post <- pre` scale matrix. Omitting `B` selects `B = 0.0` and
+therefore a covariance-only optimized update path.
 
 The same `Ref{Bool}` may be passed to multiple rules when they should switch as
 a group. Disabling a rule freezes its plasticity-update schedule and performs
