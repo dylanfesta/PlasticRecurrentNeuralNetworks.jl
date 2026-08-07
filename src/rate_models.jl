@@ -631,6 +631,10 @@ end
 Construct a covariance estimator that tracks
 `Q = E[r_post * r_pre']` and `C = Q - μ_post * μ_pre'`.
 
+The initial second moment is seeded as `Q = μ_post * μ_pre'` from the
+supplied mean estimators, so the initial covariance is zero without introducing
+a negative transient at the first update.
+
 The shorter constructor extracts the populations from the supplied mean
 estimators. If `τ` or `dt` is omitted, that value is inferred from the mean
 estimators and the post/pre mean estimators must agree.
@@ -644,7 +648,7 @@ function RateCovarianceEstimator(
     dt::Float64)
   @assert mean_post_estimator.pop === pop_post "Post mean estimator must track pop_post"
   @assert mean_pre_estimator.pop === pop_pre "Pre mean estimator must track pop_pre"
-  return RateCovarianceEstimator(
+  est = RateCovarianceEstimator(
     pop_post,
     pop_pre,
     pop_post.n,
@@ -658,6 +662,8 @@ function RateCovarianceEstimator(
     fill(0.0,pop_post.n,pop_pre.n),
     -Inf
   )
+  reset!(est)
+  return est
 end
 
 function RateCovarianceEstimator(
@@ -688,13 +694,21 @@ end
 """
     reset!(est::RateCovarianceEstimator) -> nothing
 
-Reset the second-moment and covariance matrices to zero.
+Reset the covariance to zero and seed the second moment from the current mean
+estimates as `Q = μ_post * μ_pre'`.
 
 The referenced mean estimators are not reset.
 """
 function reset!(est::RateCovarianceEstimator)
-  fill!(est.second_moment_now,0.0)
-  fill!(est.covariance_now,0.0)
+  post_means = est.mean_post_estimator.mean_now
+  pre_means = est.mean_pre_estimator.mean_now
+  @inbounds for j in 1:est.n_pre
+    pre_mean = pre_means[j]
+    for i in 1:est.n_post
+      est.second_moment_now[i,j] = post_means[i] * pre_mean
+      est.covariance_now[i,j] = 0.0
+    end
+  end
   est.t_last_update = -Inf
   return nothing
 end

@@ -458,9 +458,54 @@ include("rate_inputs.jl")
     @test PNN.reset!(estimator) === nothing
     @test isapprox(post_mean_estimator.mean_now,mean_post_expected; rtol=1e-12)
     @test isapprox(pre_mean_estimator.mean_now,mean_pre_expected; rtol=1e-12)
-    @test all(iszero,estimator.second_moment_now)
+    @test isapprox(
+      estimator.second_moment_now,
+      mean_post_expected * mean_pre_expected';
+      rtol=1e-12,
+    )
     @test all(iszero,estimator.covariance_now)
     @test estimator.t_last_update == -Inf
+
+    initialized_post_mean = PNN.RateMeanEstimator(
+      post_population,
+      tau_covariance,
+      dt_trace;
+      initial_mean=copy(post_population.rates_now),
+    )
+    initialized_pre_mean = PNN.RateMeanEstimator(
+      pre_population,
+      tau_covariance,
+      dt_trace;
+      initial_mean=copy(pre_population.rates_now),
+    )
+    initialized_estimator = PNN.RateCovarianceEstimator(
+      initialized_post_mean,
+      initialized_pre_mean,
+    )
+    initialized_second_moment =
+      initialized_post_mean.mean_now * initialized_pre_mean.mean_now'
+    @test initialized_estimator.second_moment_now == initialized_second_moment
+    @test all(iszero,initialized_estimator.covariance_now)
+
+    @test PNN.local_update!(0.0,dt_rate,initialized_post_mean) === nothing
+    @test PNN.local_update!(0.0,dt_rate,initialized_pre_mean) === nothing
+    @test PNN.local_update!(0.0,dt_rate,initialized_estimator) === nothing
+    @test isapprox(
+      initialized_estimator.second_moment_now,
+      initialized_second_moment;
+      rtol=1e-12,
+    )
+    @test all(iszero,initialized_estimator.covariance_now)
+
+    empty_population = PNN.LinearRateNeuralPopulation(
+      PNN.ExcitatoryRateNeuron(1.0;rate_saturation=100.0),
+      0,
+    )
+    empty_mean = PNN.RateMeanEstimator(empty_population,tau_covariance,dt_trace)
+    empty_estimator = PNN.RateCovarianceEstimator(empty_mean,empty_mean)
+    @test size(empty_estimator.second_moment_now) == (0,0)
+    @test size(empty_estimator.covariance_now) == (0,0)
+    @test PNN.reset!(empty_estimator) === nothing
 
     explicit_time_estimator = PNN.RateCovarianceEstimator(
       post_mean_estimator,
