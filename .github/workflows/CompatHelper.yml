@@ -5,6 +5,10 @@ on:
     - cron: 0 0 * * *
   workflow_dispatch:
 
+env:
+  # Keep registry bootstrap independent of pkg.julialang.org snapshots.
+  JULIA_PKG_SERVER: ""
+
 jobs:
   CompatHelper:
     runs-on: ubuntu-latest
