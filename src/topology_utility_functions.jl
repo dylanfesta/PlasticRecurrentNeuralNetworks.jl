@@ -2,6 +2,30 @@
 Component of PlasticRecurrentNeuralNetworks.jl package with utility functions for generating topologies of neural populations and connections.
 
 =#
+"""
+    generate_homogeneous_weight_matrix(n_post, n_pre, row_sum)
+
+Generate an `(n_post, n_pre)` weight matrix whose entries are equal and whose
+rows each sum to `row_sum`. The matrix follows the package convention
+`post <- pre`, with postsynaptic neurons along rows and presynaptic neurons
+along columns.
+"""
+function generate_homogeneous_weight_matrix(n_post::Int, n_pre::Int, row_sum::Float64)
+    return fill(row_sum / n_pre, n_post, n_pre)
+end
+
+"""
+    generate_homogeneous_noselfconnected_matrix(n, row_sum)
+
+Generate an `(n, n)` homogeneous weight matrix with a zero diagonal and rows
+that each sum to `row_sum`. Each off-diagonal entry is `row_sum / (n - 1)`.
+"""
+function generate_homogeneous_noselfconnected_matrix(n::Int, row_sum::Float64)
+    weights = fill(row_sum / (n - 1), n, n)
+    weights[diagind(weights)] .= 0.0
+    return weights
+end
+
 
 """
   place_neurons_on_ring(n_neurons; offset=0.0)

@@ -1434,6 +1434,19 @@ include("rate_inputs.jl")
     )
   end
 
+  @testset "Homogeneous weight matrices" begin
+    weights = PNN.generate_homogeneous_weight_matrix(2,3,6.0)
+    @test size(weights) == (2,3)
+    @test weights == fill(2.0,2,3)
+    @test isapprox(vec(sum(weights;dims=2)),fill(6.0,2);rtol=1e-12)
+
+    no_self_weights = PNN.generate_homogeneous_noselfconnected_matrix(4,6.0)
+    @test size(no_self_weights) == (4,4)
+    @test diag(no_self_weights) == zeros(4)
+    @test all(no_self_weights[.!Matrix{Bool}(I,4,4)] .== 2.0)
+    @test isapprox(vec(sum(no_self_weights;dims=2)),fill(6.0,4);rtol=1e-12)
+  end
+
   @testset "generate_ring_topology" begin
     locations = PNN.place_neurons_on_ring(4; offset=0.5)
     @test isapprox(locations,0.5 .+ [0.0,π / 2,π,3π / 2]; rtol=1e-12)
