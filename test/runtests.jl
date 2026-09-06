@@ -627,6 +627,7 @@ include("rate_inputs.jl")
       [0.5,1.0,1.5],
       [10.0,20.0],
       0.5,
+      0.0, # α_leak
       0.02,
       0.1,
       3.01,
@@ -643,6 +644,7 @@ include("rate_inputs.jl")
       fill(NaN,3),
       fill(NaN,2),
       0.0,
+      0.0, # α_leak
       0.02,
       -Inf,
       Inf,
@@ -664,6 +666,7 @@ include("rate_inputs.jl")
       [0.5,1.0,1.5],
       [10.0,20.0],
       -0.5,
+      0.0, # α_leak
       0.02,
       0.1,
       3.01,
@@ -681,6 +684,7 @@ include("rate_inputs.jl")
       fill(NaN,3),
       fill(NaN,2),
       -0.0,
+      0.0, # α_leak
       0.02,
       -Inf,
       Inf,
@@ -700,6 +704,7 @@ include("rate_inputs.jl")
       covariance,
       -0.5,
       0.25,
+      0.0, # α_leak
       0.02,
       0.1,
       3.01,
@@ -1167,6 +1172,84 @@ include("rate_inputs.jl")
     )
   end
 
+  @testset "Covariance weight leakage" begin
+    post = PNN.LinearRateNeuralPopulation(
+      PNN.ExcitatoryRateNeuron(1.0;rate_saturation=100.0), 2,
+    )
+    pre = PNN.LinearRateNeuralPopulation(
+      PNN.ExcitatoryRateNeuron(1.0;rate_saturation=100.0), 3,
+    )
+    post_mean = PNN.RateMeanEstimator(post,1.0,0.1;initial_mean=[2.0,3.0])
+    pre_mean = PNN.RateMeanEstimator(pre,1.0,0.1;initial_mean=[1.0,2.0,4.0])
+    covariance = PNN.RateCovarianceEstimator(post_mean,pre_mean)
+    C = [0.5 -1.0 2.0; 1.5 0.25 -0.5]
+    initial = [1.0 2.0 0.0; 3.0 4.0 5.0]
+    scales = [0.5 0.0 2.0; 1.0 2.0 -0.5]
+
+    @testset "scaled=$scaled transposed=$transposed B=$B" for
+        scaled in (false,true), transposed in (false,true), B in (0.0,0.5)
+      covariance.covariance_now .= C
+      post_mean.mean_now .= [2.0,3.0]
+      pre_mean.mean_now .= [1.0,2.0,4.0]
+      pop_post,pop_pre = transposed ? (pre,post) : (post,pre)
+      estimator = transposed ? PNN.CovarianceTransposed(covariance) : covariance
+      weights = transposed ? permutedims(initial) : copy(initial)
+      A = scaled ? (transposed ? permutedims(scales) : copy(scales)) : ones(size(weights))
+      synapse = PNN.RateLinearSynapses(copy(weights))
+      constructor = scaled ? PNN.RatePlasticityScaledCovariance : PNN.RatePlasticityCovariance
+      args = scaled ? (pop_post,synapse,pop_pre,A) : (pop_post,synapse,pop_pre)
+      # Exercise both the implicit-B constructor and the explicit-B constructor.
+      args = B == 0.0 ? (args...,0.1,0.2,estimator) : (args...,B,0.1,0.2,estimator)
+      default_rule = constructor(args...;w_min=-Inf)
+      zero_rule = constructor(args...;α_leak=0.0,w_min=-Inf)
+      @test default_rule.α_leak == zero_rule.α_leak == 0.0
+      PNN.plasticity!(0.0,0.01,default_rule)
+      default_result = copy(synapse.weights)
+      synapse.weights .= weights
+      PNN.plasticity!(0.0,0.01,zero_rule)
+      @test isapprox(synapse.weights,default_result;rtol=1e-12,atol=1e-12)
+
+      synapse.weights .= weights
+      rule = constructor(args...;α_leak=0.75,w_min=-Inf)
+      @test rule.α_leak == 0.75
+      PNN.plasticity_off!(rule)
+      @test PNN.plasticity!(0.0,0.01,rule) === nothing
+      @test synapse.weights == weights
+      @test rule.t_last_update[] == -Inf
+      PNN.plasticity_on!(rule)
+      rule.t_last_update[] = 0.0
+      @test PNN.plasticity!(0.05,0.01,rule) === nothing
+      @test synapse.weights == weights
+      @test rule.t_last_update[] == 0.0
+
+      drive = C + B * ([2.0,3.0] * [1.0,2.0,4.0]')
+      drive = transposed ? permutedims(drive) : drive
+      expected = weights + 0.02 .* A .* (drive - 0.75 .* weights)
+      expected[weights .== 0.0] .= 0.0
+      @test PNN.plasticity!(0.1,0.01,rule) === nothing
+      @test isapprox(synapse.weights,expected;rtol=1e-12,atol=1e-12)
+      @test rule.t_last_update[] == 0.1
+
+      # With no covariance or mean drive, only scaled weight decay remains.
+      covariance.covariance_now .= 0.0
+      post_mean.mean_now .= 0.0
+      pre_mean.mean_now .= 0.0
+      synapse.weights .= weights
+      @test PNN.plasticity!(0.3,0.01,rule) === nothing
+      @test isapprox(synapse.weights,weights .* (1.0 .- 0.015 .* A);
+        rtol=1e-12,atol=1e-12)
+
+      # Clamp the full update, while preserving zero weights and masked entries.
+      synapse.weights .= weights
+      bounded_rule = constructor(args...;α_leak=100.0,w_min=0.1,w_max=4.5)
+      expected = clamp.(weights .* (1.0 .- 2.0 .* A),0.1,4.5)
+      skipped = (weights .== 0.0) .| (A .== 0.0)
+      expected[skipped] .= weights[skipped]
+      @test PNN.plasticity!(0.0,0.01,bounded_rule) === nothing
+      @test isapprox(synapse.weights,expected;rtol=1e-12,atol=1e-12)
+    end
+  end
+
   @testset "RatePlasticityCovarianceQuadraticallyStabilized" begin
     post_population = PNN.LinearRateNeuralPopulation(
       PNN.ExcitatoryRateNeuron(1.0;rate_saturation=100.0),
@@ -1266,6 +1349,62 @@ include("rate_inputs.jl")
       2 * (synapse_small_dt.weights[1,1] - 1.0);
       rtol=1e-12,
     )
+
+    @test rule.α_leak == 0.0
+    @testset "Leakage transposed=$transposed" for transposed in (false,true)
+      weights = transposed ? permutedims(initial_weights) : copy(initial_weights)
+      C = transposed ? permutedims(covariance_estimator.covariance_now) :
+        copy(covariance_estimator.covariance_now)
+      pop_post,pop_pre = transposed ? (pre_population,post_population) :
+        (post_population,pre_population)
+      estimator = transposed ? PNN.CovarianceTransposed(covariance_estimator) :
+        covariance_estimator
+      leak_synapse = PNN.RateLinearSynapses(copy(weights))
+      args = (pop_post,leak_synapse,pop_pre,0.1,-0.5,0.25,0.2,estimator)
+      default_rule = PNN.RatePlasticityCovarianceQuadraticallyStabilized(args...;w_min=-Inf)
+      zero_rule = PNN.RatePlasticityCovarianceQuadraticallyStabilized(args...;α_leak=0.0,w_min=-Inf)
+      @test zero_rule.α_leak == default_rule.α_leak == 0.0
+      PNN.plasticity!(0.0,0.01,default_rule)
+      default_result = copy(leak_synapse.weights)
+      leak_synapse.weights .= weights
+      PNN.plasticity!(0.0,0.01,zero_rule)
+      @test isapprox(leak_synapse.weights,default_result;rtol=1e-12,atol=1e-12)
+
+      leak_synapse.weights .= weights
+      leak_rule = PNN.RatePlasticityCovarianceQuadraticallyStabilized(args...;α_leak=0.75,w_min=-Inf)
+      @test leak_rule.α_leak == 0.75
+      PNN.plasticity_off!(leak_rule)
+      @test PNN.plasticity!(0.0,0.01,leak_rule) === nothing
+      @test leak_synapse.weights == weights
+      @test leak_rule.t_last_update[] == -Inf
+      PNN.plasticity_on!(leak_rule)
+      leak_rule.t_last_update[] = 0.0
+      @test PNN.plasticity!(0.05,0.01,leak_rule) === nothing
+      @test leak_synapse.weights == weights
+      @test leak_rule.t_last_update[] == 0.0
+      expected = weights + 0.02 .* (-0.5 .* C + 0.25 .* weights.^2 - 0.75 .* weights)
+      expected[weights .== 0.0] .= 0.0
+      @test PNN.plasticity!(0.1,0.01,leak_rule) === nothing
+      @test isapprox(leak_synapse.weights,expected;rtol=1e-12,atol=1e-12)
+      @test leak_rule.t_last_update[] == 0.1
+
+      leak_synapse.weights .= weights
+      decay_rule = PNN.RatePlasticityCovarianceQuadraticallyStabilized(
+        pop_post,leak_synapse,pop_pre,0.05,0.0,0.0,0.2,estimator;
+        α_leak=0.75,w_min=-Inf,
+      )
+      @test PNN.plasticity!(0.0,0.01,decay_rule) === nothing
+      @test isapprox(leak_synapse.weights,0.9925 .* weights;rtol=1e-12,atol=1e-12)
+
+      leak_synapse.weights .= weights
+      bounded_rule = PNN.RatePlasticityCovarianceQuadraticallyStabilized(
+        args...;α_leak=100.0,w_min=0.1,w_max=1.5,
+      )
+      expected = clamp.(weights + 0.02 .* (-0.5 .* C + 0.25 .* weights.^2 - 100.0 .* weights),0.1,1.5)
+      expected[weights .== 0.0] .= 0.0
+      @test PNN.plasticity!(0.0,0.01,bounded_rule) === nothing
+      @test isapprox(leak_synapse.weights,expected;rtol=1e-12,atol=1e-12)
+    end
 
     swapped_covariance_estimator = PNN.RateCovarianceEstimator(
       pre_mean_estimator,

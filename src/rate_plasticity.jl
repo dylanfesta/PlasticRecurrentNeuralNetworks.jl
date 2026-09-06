@@ -140,11 +140,11 @@ end
 
 """
     RatePlasticityCovariance
-    RatePlasticityCovariance(pop_post, synapses_post_pre, pop_pre, Δt, learning_rate, covariance_estimator; is_active=Ref(true), w_min=1E-8, w_max=Inf)
-    RatePlasticityCovariance(pop_post, synapses_post_pre, pop_pre, B, Δt, learning_rate, covariance_estimator; is_active=Ref(true), w_min=1E-8, w_max=Inf)
+    RatePlasticityCovariance(pop_post, synapses_post_pre, pop_pre, Δt, learning_rate, covariance_estimator; α_leak=0.0, is_active=Ref(true), w_min=1E-8, w_max=Inf)
+    RatePlasticityCovariance(pop_post, synapses_post_pre, pop_pre, B, Δt, learning_rate, covariance_estimator; α_leak=0.0, is_active=Ref(true), w_min=1E-8, w_max=Inf)
 
 Second-order covariance plasticity rule for a pair of rate populations:
-`w <- w + Δt * learning_rate * (C_post_pre(t) + B * μ_post(t) * μ_pre(t))`.
+`w <- w + Δt * learning_rate * (C_post_pre(t) + B * μ_post(t) * μ_pre(t) - α_leak * w)`.
 The rule updates every `Δt` seconds, and `learning_rate` is interpreted per
 unit time, so each update is internally scaled by `Δt`.
 
@@ -156,6 +156,8 @@ The supplied covariance and mean estimators are external to the rule and should
 be listed once in `RecurrentNetwork.estimators`. An inactive rule does not
 change weights or advance its plasticity schedule.
 
+The weight-leak coefficient `α_leak` defaults to zero, preserving the original rule.
+
 By convention, the rule acts only on nonzero weights.
 """
 struct RatePlasticityCovariance <: RatePlasticity
@@ -163,6 +165,7 @@ struct RatePlasticityCovariance <: RatePlasticity
   pop_post::RateNeuralPopulation
   synapses_post_pre::RateSynapses
   B::Float64
+  α_leak::Float64
   Δt::Float64
   learning_rate::Float64
   covariance_estimator::RateCovarianceAccumulator
@@ -179,6 +182,7 @@ function RatePlasticityCovariance(
     Δt::Float64,
     learning_rate::Float64,
     covariance_estimator::RateCovarianceAccumulator;
+    α_leak::Float64=0.0,
     w_min::Float64=1E-8,
     w_max::Float64=Inf,
     is_active::Base.RefValue{Bool}=Ref(true)
@@ -191,6 +195,7 @@ function RatePlasticityCovariance(
     Δt,
     learning_rate,
     covariance_estimator;
+    α_leak=α_leak,
     w_min=w_min,
     w_max=w_max,
     is_active=is_active,
@@ -205,6 +210,7 @@ function RatePlasticityCovariance(
     Δt::Float64,
     learning_rate::Float64,
     covariance_estimator::RateCovarianceAccumulator;
+    α_leak::Float64=0.0,
     w_min::Float64=1E-8,
     w_max::Float64=Inf,
     is_active::Base.RefValue{Bool}=Ref(true)
@@ -220,6 +226,7 @@ function RatePlasticityCovariance(
     pop_post,
     synapses_post_pre,
     B,
+    α_leak,
     Δt,
     learning_rate,
     covariance_estimator,
@@ -236,6 +243,7 @@ function _update_covariance_plasticity!(
     rates_pre::Vector{Float64},
     rates_post::Vector{Float64},
     B::Float64,
+    α_leak::Float64,
     effective_learning_rate::Float64,
     w_min::Float64,
     w_max::Float64)
@@ -247,7 +255,7 @@ function _update_covariance_plasticity!(
         if w_old == 0.0
           continue
         end
-        w_new = w_old + effective_learning_rate * covariance_now[i,j]
+        w_new = w_old + effective_learning_rate * (covariance_now[i,j] - α_leak * w_old)
         weights[i,j] = clamp(w_new,w_min,w_max)
       end
     end
@@ -259,7 +267,7 @@ function _update_covariance_plasticity!(
       if w_old == 0.0
         continue
       end
-      w_new = w_old + effective_learning_rate * (covariance_now[i,j] + B * rates_post[i] * rates_pre[j])
+      w_new = w_old + effective_learning_rate * (covariance_now[i,j] + B * rates_post[i] * rates_pre[j] - α_leak * w_old)
       weights[i,j] = clamp(w_new,w_min,w_max)
     end
   end
@@ -272,6 +280,7 @@ function _update_covariance_plasticity_transposed!(
     rates_pre::Vector{Float64},
     rates_post::Vector{Float64},
     B::Float64,
+    α_leak::Float64,
     effective_learning_rate::Float64,
     w_min::Float64,
     w_max::Float64)
@@ -283,7 +292,7 @@ function _update_covariance_plasticity_transposed!(
         if w_old == 0.0
           continue
         end
-        w_new = w_old + effective_learning_rate * covariance_now[j,i]
+        w_new = w_old + effective_learning_rate * (covariance_now[j,i] - α_leak * w_old)
         weights[i,j] = clamp(w_new,w_min,w_max)
       end
     end
@@ -295,7 +304,7 @@ function _update_covariance_plasticity_transposed!(
       if w_old == 0.0
         continue
       end
-      w_new = w_old + effective_learning_rate * (covariance_now[j,i] + B * rates_post[i] * rates_pre[j])
+      w_new = w_old + effective_learning_rate * (covariance_now[j,i] + B * rates_post[i] * rates_pre[j] - α_leak * w_old)
       weights[i,j] = clamp(w_new,w_min,w_max)
     end
   end
@@ -306,6 +315,7 @@ function _update_covariance_plasticity!(
     weights::Matrix{Float64},
     covariance_estimator::RateCovarianceEstimator,
     B::Float64,
+    α_leak::Float64,
     effective_learning_rate::Float64,
     w_min::Float64,
     w_max::Float64)
@@ -315,6 +325,7 @@ function _update_covariance_plasticity!(
     covariance_estimator.mean_pre_estimator.mean_now,
     covariance_estimator.mean_post_estimator.mean_now,
     B,
+    α_leak,
     effective_learning_rate,
     w_min,
     w_max,
@@ -325,6 +336,7 @@ function _update_covariance_plasticity!(
     weights::Matrix{Float64},
     covariance_estimator::CovarianceTransposed,
     B::Float64,
+    α_leak::Float64,
     effective_learning_rate::Float64,
     w_min::Float64,
     w_max::Float64)
@@ -334,6 +346,7 @@ function _update_covariance_plasticity!(
     covariance_estimator.covariance_estimator.mean_post_estimator.mean_now,
     covariance_estimator.covariance_estimator.mean_pre_estimator.mean_now,
     B,
+    α_leak,
     effective_learning_rate,
     w_min,
     w_max,
@@ -351,6 +364,7 @@ function plasticity!(t_now::Float64,dt::Float64,rule::RatePlasticityCovariance)
     rule.synapses_post_pre.weights,
     rule.covariance_estimator,
     rule.B,
+    rule.α_leak,
     rule.learning_rate * rule.Δt,
     rule.w_min,
     rule.w_max,
@@ -360,11 +374,11 @@ end
 
 """
     RatePlasticityScaledCovariance
-    RatePlasticityScaledCovariance(pop_post, synapses_post_pre, pop_pre, scale_matrix, Δt, learning_rate, covariance_estimator; is_active=Ref(true), w_min=1E-8, w_max=Inf)
-    RatePlasticityScaledCovariance(pop_post, synapses_post_pre, pop_pre, scale_matrix, B, Δt, learning_rate, covariance_estimator; is_active=Ref(true), w_min=1E-8, w_max=Inf)
+    RatePlasticityScaledCovariance(pop_post, synapses_post_pre, pop_pre, scale_matrix, Δt, learning_rate, covariance_estimator; α_leak=0.0, is_active=Ref(true), w_min=1E-8, w_max=Inf)
+    RatePlasticityScaledCovariance(pop_post, synapses_post_pre, pop_pre, scale_matrix, B, Δt, learning_rate, covariance_estimator; α_leak=0.0, is_active=Ref(true), w_min=1E-8, w_max=Inf)
 
 Covariance-based plasticity rule with an arbitrary pre-post scaling factor:
-`w <- w + Δt * learning_rate * A_post_pre * (C_post_pre(t) + B * μ_post(t) * μ_pre(t))`.
+`w <- w + Δt * learning_rate * A_post_pre * (C_post_pre(t) + B * μ_post(t) * μ_pre(t) - α_leak * w)`.
 The rule updates every `Δt` seconds, and `learning_rate` is interpreted per
 unit time, so each update is internally scaled by `Δt`. The running means are
 read from the covariance estimator.
@@ -375,14 +389,17 @@ distance-based scaling factor. See [`generate_ring_topology`](@ref).
 The covariance estimator is updated externally through
 `RecurrentNetwork.estimators`, including while this rule is inactive.
 
+The weight-leak coefficient `α_leak` defaults to zero, preserving the original rule.
+
 By convention, the rule acts only on nonzero weights. Entries whose scale is
-zero are also skipped.
+zero are also skipped, including the leak. Scaling applies to the entire update.
 """
 struct RatePlasticityScaledCovariance <: RatePlasticity
   pop_pre::RateNeuralPopulation
   pop_post::RateNeuralPopulation
   synapses_post_pre::RateSynapses
   B::Float64
+  α_leak::Float64
   Δt::Float64
   learning_rate::Float64
   covariance_estimator::RateCovarianceAccumulator
@@ -402,6 +419,7 @@ function RatePlasticityScaledCovariance(
     Δt::Float64,
     learning_rate::Float64,
     covariance_estimator::RateCovarianceAccumulator;
+    α_leak::Float64=0.0,
     w_min::Float64=1E-8,
     w_max::Float64=Inf,
     is_active::Base.RefValue{Bool}=Ref(true)
@@ -415,6 +433,7 @@ function RatePlasticityScaledCovariance(
     Δt,
     learning_rate,
     covariance_estimator;
+    α_leak=α_leak,
     w_min=w_min,
     w_max=w_max,
     is_active=is_active,
@@ -430,6 +449,7 @@ function RatePlasticityScaledCovariance(
     Δt::Float64,
     learning_rate::Float64,
     covariance_estimator::RateCovarianceAccumulator;
+    α_leak::Float64=0.0,
     w_min::Float64=1E-8,
     w_max::Float64=Inf,
     is_active::Base.RefValue{Bool}=Ref(true)
@@ -446,6 +466,7 @@ function RatePlasticityScaledCovariance(
     pop_post,
     synapses_post_pre,
     B,
+    α_leak,
     Δt,
     learning_rate,
     covariance_estimator,
@@ -464,6 +485,7 @@ function _update_scaled_covariance_plasticity!(
     rates_pre::Vector{Float64},
     rates_post::Vector{Float64},
     B::Float64,
+    α_leak::Float64,
     effective_learning_rate::Float64,
     w_min::Float64,
     w_max::Float64)
@@ -476,7 +498,7 @@ function _update_scaled_covariance_plasticity!(
         if (w_old == 0.0) || (scale == 0.0)
           continue
         end
-        w_new = w_old + effective_learning_rate * scale * covariance_now[i,j]
+        w_new = w_old + effective_learning_rate * scale * (covariance_now[i,j] - α_leak * w_old)
         weights[i,j] = clamp(w_new,w_min,w_max)
       end
     end
@@ -489,7 +511,7 @@ function _update_scaled_covariance_plasticity!(
       if (w_old == 0.0) || (scale == 0.0)
         continue
       end
-      w_new = w_old + effective_learning_rate * scale * (covariance_now[i,j] + B * rates_post[i] * rates_pre[j])
+      w_new = w_old + effective_learning_rate * scale * (covariance_now[i,j] + B * rates_post[i] * rates_pre[j] - α_leak * w_old)
       weights[i,j] = clamp(w_new,w_min,w_max)
     end
   end
@@ -503,6 +525,7 @@ function _update_scaled_covariance_plasticity_transposed!(
     rates_pre::Vector{Float64},
     rates_post::Vector{Float64},
     B::Float64,
+    α_leak::Float64,
     effective_learning_rate::Float64,
     w_min::Float64,
     w_max::Float64)
@@ -515,7 +538,7 @@ function _update_scaled_covariance_plasticity_transposed!(
         if (w_old == 0.0) || (scale == 0.0)
           continue
         end
-        w_new = w_old + effective_learning_rate * scale * covariance_now[j,i]
+        w_new = w_old + effective_learning_rate * scale * (covariance_now[j,i] - α_leak * w_old)
         weights[i,j] = clamp(w_new,w_min,w_max)
       end
     end
@@ -528,7 +551,7 @@ function _update_scaled_covariance_plasticity_transposed!(
       if (w_old == 0.0) || (scale == 0.0)
         continue
       end
-      w_new = w_old + effective_learning_rate * scale * (covariance_now[j,i] + B * rates_post[i] * rates_pre[j])
+      w_new = w_old + effective_learning_rate * scale * (covariance_now[j,i] + B * rates_post[i] * rates_pre[j] - α_leak * w_old)
       weights[i,j] = clamp(w_new,w_min,w_max)
     end
   end
@@ -540,6 +563,7 @@ function _update_scaled_covariance_plasticity!(
     covariance_estimator::RateCovarianceEstimator,
     scale_matrix::Matrix{Float64},
     B::Float64,
+    α_leak::Float64,
     effective_learning_rate::Float64,
     w_min::Float64,
     w_max::Float64)
@@ -550,6 +574,7 @@ function _update_scaled_covariance_plasticity!(
     covariance_estimator.mean_pre_estimator.mean_now,
     covariance_estimator.mean_post_estimator.mean_now,
     B,
+    α_leak,
     effective_learning_rate,
     w_min,
     w_max,
@@ -561,6 +586,7 @@ function _update_scaled_covariance_plasticity!(
     covariance_estimator::CovarianceTransposed,
     scale_matrix::Matrix{Float64},
     B::Float64,
+    α_leak::Float64,
     effective_learning_rate::Float64,
     w_min::Float64,
     w_max::Float64)
@@ -571,6 +597,7 @@ function _update_scaled_covariance_plasticity!(
     covariance_estimator.covariance_estimator.mean_post_estimator.mean_now,
     covariance_estimator.covariance_estimator.mean_pre_estimator.mean_now,
     B,
+    α_leak,
     effective_learning_rate,
     w_min,
     w_max,
@@ -589,6 +616,7 @@ function plasticity!(t_now::Float64,dt::Float64,rule::RatePlasticityScaledCovari
     rule.covariance_estimator,
     rule.scale_matrix,
     rule.B,
+    rule.α_leak,
     rule.learning_rate * rule.Δt,
     rule.w_min,
     rule.w_max,
@@ -599,13 +627,14 @@ end
 
 """
     RatePlasticityCovarianceQuadraticallyStabilized
-    RatePlasticityCovarianceQuadraticallyStabilized(pop_post, synapses_post_pre, pop_pre, Δt, α1, α2, learning_rate, covariance_estimator; is_active=Ref(true), w_min=1E-8, w_max=Inf)
+    RatePlasticityCovarianceQuadraticallyStabilized(pop_post, synapses_post_pre, pop_pre, Δt, α1, α2, learning_rate, covariance_estimator; α_leak=0.0, is_active=Ref(true), w_min=1E-8, w_max=Inf)
 
 Covariance-based plasticity rule with an additional stabilizing term that
 scales quadratically with the weight.
-the rule is w <- w + Δt * learning_rate * (α1 * C_post_pre(t) + α2 * w^2)
-With an update every Δt seconds. `learning_rate` is interpreted per unit time,
-so each update is internally scaled by the elapsed plasticity interval.
+`w <- w + Δt * learning_rate * (α1 * C_post_pre(t) + α2 * w^2 - α_leak * w)`.
+The rule updates every Δt seconds. `learning_rate` is interpreted per unit time,
+so each update is internally scaled by Δt.
+The weight-leak coefficient `α_leak` defaults to zero, preserving the original rule.
 
 α1 and α2 are intended to be of opposite sign, and depend on the effect on the neuron on covariance.
 
@@ -624,6 +653,7 @@ struct RatePlasticityCovarianceQuadraticallyStabilized <: RatePlasticity
   synapses_post_pre::RateSynapses
   α1::Float64
   α2::Float64
+  α_leak::Float64
   Δt::Float64
   learning_rate::Float64
   covariance_estimator::RateCovarianceAccumulator
@@ -643,6 +673,7 @@ function RatePlasticityCovarianceQuadraticallyStabilized(
     α2::Float64,
     learning_rate::Float64,
     covariance_estimator::RateCovarianceAccumulator;
+    α_leak::Float64=0.0,
     w_min::Float64=1E-8,
     w_max::Float64=Inf,
     is_active::Base.RefValue{Bool}=Ref(true)
@@ -659,6 +690,7 @@ function RatePlasticityCovarianceQuadraticallyStabilized(
     synapses_post_pre,
     α1,
     α2,
+    α_leak,
     Δt,
     learning_rate,
     covariance_estimator,
@@ -675,6 +707,7 @@ function _update_quadratic_covariance_plasticity!(
     covariance_now::Matrix{Float64},
     α1::Float64,
     α2::Float64,
+    α_leak::Float64,
     effective_learning_rate::Float64,
     w_min::Float64,
     w_max::Float64)
@@ -685,7 +718,7 @@ function _update_quadratic_covariance_plasticity!(
       if w_old == 0.0
         continue
       end
-      w_new = w_old + effective_learning_rate * (α1 * covariance_now[i,j] + α2 * w_old^2)
+      w_new = w_old + effective_learning_rate * (α1 * covariance_now[i,j] + α2 * w_old^2 - α_leak * w_old)
       weights[i,j] = clamp(w_new,w_min,w_max)
     end
   end
@@ -697,6 +730,7 @@ function _update_quadratic_covariance_plasticity_transposed!(
     covariance_now::Matrix{Float64},
     α1::Float64,
     α2::Float64,
+    α_leak::Float64,
     effective_learning_rate::Float64,
     w_min::Float64,
     w_max::Float64)
@@ -707,7 +741,7 @@ function _update_quadratic_covariance_plasticity_transposed!(
       if w_old == 0.0
         continue
       end
-      w_new = w_old + effective_learning_rate * (α1 * covariance_now[j,i] + α2 * w_old^2)
+      w_new = w_old + effective_learning_rate * (α1 * covariance_now[j,i] + α2 * w_old^2 - α_leak * w_old)
       weights[i,j] = clamp(w_new,w_min,w_max)
     end
   end
@@ -719,6 +753,7 @@ function _update_quadratic_covariance_plasticity!(
     covariance_estimator::RateCovarianceEstimator,
     α1::Float64,
     α2::Float64,
+    α_leak::Float64,
     effective_learning_rate::Float64,
     w_min::Float64,
     w_max::Float64)
@@ -727,6 +762,7 @@ function _update_quadratic_covariance_plasticity!(
     covariance_estimator.covariance_now,
     α1,
     α2,
+    α_leak,
     effective_learning_rate,
     w_min,
     w_max,
@@ -738,6 +774,7 @@ function _update_quadratic_covariance_plasticity!(
     covariance_estimator::CovarianceTransposed,
     α1::Float64,
     α2::Float64,
+    α_leak::Float64,
     effective_learning_rate::Float64,
     w_min::Float64,
     w_max::Float64)
@@ -746,6 +783,7 @@ function _update_quadratic_covariance_plasticity!(
     covariance_estimator.covariance_estimator.covariance_now,
     α1,
     α2,
+    α_leak,
     effective_learning_rate,
     w_min,
     w_max,
@@ -764,6 +802,7 @@ function plasticity!(t_now::Float64,dt::Float64,rule::RatePlasticityCovarianceQu
     rule.covariance_estimator,
     rule.α1,
     rule.α2,
+    rule.α_leak,
     rule.learning_rate * rule.Δt,
     rule.w_min,
     rule.w_max,
