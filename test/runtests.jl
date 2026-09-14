@@ -1172,6 +1172,100 @@ include("rate_inputs.jl")
     )
   end
 
+  @testset "Signed-square-root covariance plasticity" begin
+    post_population = PNN.LinearRateNeuralPopulation(
+      PNN.ExcitatoryRateNeuron(1.0;rate_saturation=100.0),2,
+      initial_rates=[1.0,2.0],
+    )
+    pre_population = PNN.LinearRateNeuralPopulation(
+      PNN.ExcitatoryRateNeuron(1.0;rate_saturation=100.0),3,
+      initial_rates=[3.0,4.0,5.0],
+    )
+    post_mean = PNN.RateMeanEstimator(post_population,1.0,0.1;initial_mean=[2.0,3.0])
+    pre_mean = PNN.RateMeanEstimator(pre_population,1.0,0.1;initial_mean=[5.0,7.0,11.0])
+    covariance = PNN.RateCovarianceEstimator(post_mean,pre_mean)
+    covariance.covariance_now .= [4.0 -9.0 0.0; 16.0 -25.0 36.0]
+
+    synapse = PNN.RateLinearSynapses([1.0 0.0 2.0; 3.0 4.0 5.0])
+    active = Ref(true)
+    rule = PNN.RatePlasticitySQRC(
+      post_population,synapse,pre_population,0.5,0.2,0.5,covariance;
+      α_leak=0.25,w_min=-Inf,w_max=Inf,is_active=active,
+    )
+    @test rule.pop_pre === pre_population
+    @test rule.pop_post === post_population
+    @test rule.synapses_post_pre === synapse
+    @test rule.covariance_estimator === covariance
+    @test rule.B == 0.5
+    @test rule.α_leak == 0.25
+    @test rule.is_active === active
+    @test !ismutabletype(typeof(rule))
+    initial_weights = copy(synapse.weights)
+    @test PNN.plasticity_off!(rule) === nothing
+    @test PNN.plasticity!(0.0,0.01,rule) === nothing
+    @test synapse.weights == initial_weights
+    @test rule.t_last_update[] == -Inf
+    PNN.plasticity_on!(rule)
+    @test PNN.plasticity!(0.0,0.01,rule) === nothing
+    expected_weights = [1.675 0.0 3.05; 4.075 4.45 7.125]
+    @test isapprox(synapse.weights,expected_weights;rtol=1e-12)
+    weights_after_update = copy(synapse.weights)
+    @test PNN.plasticity!(0.1,0.01,rule) === nothing
+    @test synapse.weights == weights_after_update
+
+    plain_synapse = PNN.RateLinearSynapses(ones(2,3))
+    plain_rule = PNN.RatePlasticitySQRC(
+      post_population,plain_synapse,pre_population,1.0,1.0,covariance;
+      w_min=-Inf,w_max=Inf,
+    )
+    @test plain_rule.B == 0.0
+    PNN.plasticity!(0.0,0.01,plain_rule)
+    @test plain_synapse.weights == [3.0 -2.0 1.0; 5.0 -4.0 7.0]
+
+    transposed_synapse = PNN.RateLinearSynapses(ones(3,2))
+    transposed_rule = PNN.RatePlasticitySQRC(
+      pre_population,transposed_synapse,post_population,1.0,1.0,
+      PNN.CovarianceTransposed(covariance);w_min=-Inf,w_max=Inf,
+    )
+    PNN.plasticity!(0.0,0.01,transposed_rule)
+    @test transposed_synapse.weights == [3.0 5.0; -2.0 -4.0; 1.0 7.0]
+
+    scale = [1.0 0.0 2.0; -1.0 0.5 0.25]
+    scaled_synapse = PNN.RateLinearSynapses(ones(2,3))
+    scaled_rule = PNN.RatePlasticityScaledSQRC(
+      post_population,scaled_synapse,pre_population,scale,1.0,1.0,covariance;
+      w_min=-Inf,w_max=Inf,
+    )
+    @test scaled_rule.B == 0.0
+    @test scaled_rule.scale_matrix === scale
+    @test PNN.plasticity!(0.0,0.01,scaled_rule) === nothing
+    @test scaled_synapse.weights == [3.0 1.0 1.0; -3.0 -1.5 2.5]
+
+    transposed_scale = [1.0 2.0; 0.5 0.0; -1.0 0.25]
+    transposed_scaled_synapse = PNN.RateLinearSynapses(ones(3,2))
+    transposed_scaled_rule = PNN.RatePlasticityScaledSQRC(
+      pre_population,transposed_scaled_synapse,post_population,
+      transposed_scale,1.0,1.0,PNN.CovarianceTransposed(covariance);
+      w_min=-Inf,w_max=Inf,
+    )
+    PNN.plasticity!(0.0,0.01,transposed_scaled_rule)
+    @test transposed_scaled_synapse.weights == [3.0 9.0; -0.5 1.0; 1.0 2.5]
+
+    scaled_with_b = PNN.RatePlasticityScaledSQRC(
+      post_population,PNN.RateLinearSynapses(ones(2,3)),pre_population,scale,
+      0.5,1.0,1.0,covariance,
+    )
+    @test scaled_with_b.B == 0.5
+
+    wrong_synapse = PNN.RateLinearSynapses(ones(2,2))
+    @test_throws AssertionError PNN.RatePlasticitySQRC(
+      post_population,wrong_synapse,pre_population,1.0,1.0,covariance,
+    )
+    @test_throws AssertionError PNN.RatePlasticityScaledSQRC(
+      post_population,synapse,pre_population,ones(2,2),1.0,1.0,covariance,
+    )
+  end
+
   @testset "Covariance weight leakage" begin
     post = PNN.LinearRateNeuralPopulation(
       PNN.ExcitatoryRateNeuron(1.0;rate_saturation=100.0), 2,

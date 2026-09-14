@@ -624,6 +624,216 @@ function plasticity!(t_now::Float64,dt::Float64,rule::RatePlasticityScaledCovari
   return nothing
 end
 
+"""
+    RatePlasticitySQRC
+    RatePlasticitySQRC(pop_post, synapses_post_pre, pop_pre, Δt, learning_rate, covariance_estimator; α_leak=0.0, is_active=Ref(true), w_min=1E-8, w_max=Inf)
+    RatePlasticitySQRC(pop_post, synapses_post_pre, pop_pre, B, Δt, learning_rate, covariance_estimator; α_leak=0.0, is_active=Ref(true), w_min=1E-8, w_max=Inf)
+
+Signed-square-root covariance plasticity. This is equivalent to
+[`RatePlasticityCovariance`](@ref), except that each covariance `C` is replaced
+by `sign(C) * sqrt(abs(C))`. The mean-product and leak terms are unchanged.
+"""
+struct RatePlasticitySQRC <: RatePlasticity
+  pop_pre::RateNeuralPopulation
+  pop_post::RateNeuralPopulation
+  synapses_post_pre::RateSynapses
+  B::Float64
+  α_leak::Float64
+  Δt::Float64
+  learning_rate::Float64
+  covariance_estimator::RateCovarianceAccumulator
+  t_last_update::Base.RefValue{Float64}
+  is_active::Base.RefValue{Bool}
+  w_min::Float64
+  w_max::Float64
+end
+
+function RatePlasticitySQRC(
+    pop_post::RateNeuralPopulation,
+    synapses_post_pre::RateSynapses,
+    pop_pre::RateNeuralPopulation,
+    Δt::Float64,
+    learning_rate::Float64,
+    covariance_estimator::RateCovarianceAccumulator;
+    α_leak::Float64=0.0,
+    w_min::Float64=1E-8,
+    w_max::Float64=Inf,
+    is_active::Base.RefValue{Bool}=Ref(true))
+  return RatePlasticitySQRC(
+    pop_post,synapses_post_pre,pop_pre,0.0,Δt,learning_rate,covariance_estimator;
+    α_leak=α_leak,w_min=w_min,w_max=w_max,is_active=is_active,
+  )
+end
+
+function RatePlasticitySQRC(
+    pop_post::RateNeuralPopulation,
+    synapses_post_pre::RateSynapses,
+    pop_pre::RateNeuralPopulation,
+    B::Float64,
+    Δt::Float64,
+    learning_rate::Float64,
+    covariance_estimator::RateCovarianceAccumulator;
+    α_leak::Float64=0.0,
+    w_min::Float64=1E-8,
+    w_max::Float64=Inf,
+    is_active::Base.RefValue{Bool}=Ref(true))
+  @assert covariance_pop_post(covariance_estimator) === pop_post "Covariance estimator must track the postsynaptic population"
+  @assert covariance_pop_pre(covariance_estimator) === pop_pre "Covariance estimator must track the presynaptic population"
+  @assert synapses_post_pre.n_post == pop_post.n "Synapse postsynaptic dimension must match pop_post.n"
+  @assert synapses_post_pre.n_pre == pop_pre.n "Synapse presynaptic dimension must match pop_pre.n"
+  @assert covariance_n_post(covariance_estimator) == pop_post.n "Covariance postsynaptic dimension must match pop_post.n"
+  @assert covariance_n_pre(covariance_estimator) == pop_pre.n "Covariance presynaptic dimension must match pop_pre.n"
+  return RatePlasticitySQRC(
+    pop_pre,pop_post,synapses_post_pre,B,α_leak,Δt,learning_rate,
+    covariance_estimator,Ref(-Inf),is_active,w_min,w_max,
+  )
+end
+
+"""
+    RatePlasticityScaledSQRC
+    RatePlasticityScaledSQRC(pop_post, synapses_post_pre, pop_pre, scale_matrix, Δt, learning_rate, covariance_estimator; α_leak=0.0, is_active=Ref(true), w_min=1E-8, w_max=Inf)
+    RatePlasticityScaledSQRC(pop_post, synapses_post_pre, pop_pre, scale_matrix, B, Δt, learning_rate, covariance_estimator; α_leak=0.0, is_active=Ref(true), w_min=1E-8, w_max=Inf)
+
+Scaled signed-square-root covariance plasticity. This is equivalent to
+[`RatePlasticityScaledCovariance`](@ref), with each covariance `C` replaced by
+`sign(C) * sqrt(abs(C))`.
+"""
+struct RatePlasticityScaledSQRC <: RatePlasticity
+  pop_pre::RateNeuralPopulation
+  pop_post::RateNeuralPopulation
+  synapses_post_pre::RateSynapses
+  B::Float64
+  α_leak::Float64
+  Δt::Float64
+  learning_rate::Float64
+  covariance_estimator::RateCovarianceAccumulator
+  scale_matrix::Matrix{Float64}
+  t_last_update::Base.RefValue{Float64}
+  is_active::Base.RefValue{Bool}
+  w_min::Float64
+  w_max::Float64
+end
+
+function RatePlasticityScaledSQRC(
+    pop_post::RateNeuralPopulation,
+    synapses_post_pre::RateSynapses,
+    pop_pre::RateNeuralPopulation,
+    scale_matrix::Matrix{Float64},
+    Δt::Float64,
+    learning_rate::Float64,
+    covariance_estimator::RateCovarianceAccumulator;
+    α_leak::Float64=0.0,
+    w_min::Float64=1E-8,
+    w_max::Float64=Inf,
+    is_active::Base.RefValue{Bool}=Ref(true))
+  return RatePlasticityScaledSQRC(
+    pop_post,synapses_post_pre,pop_pre,scale_matrix,0.0,Δt,learning_rate,
+    covariance_estimator;α_leak=α_leak,w_min=w_min,w_max=w_max,is_active=is_active,
+  )
+end
+
+function RatePlasticityScaledSQRC(
+    pop_post::RateNeuralPopulation,
+    synapses_post_pre::RateSynapses,
+    pop_pre::RateNeuralPopulation,
+    scale_matrix::Matrix{Float64},
+    B::Float64,
+    Δt::Float64,
+    learning_rate::Float64,
+    covariance_estimator::RateCovarianceAccumulator;
+    α_leak::Float64=0.0,
+    w_min::Float64=1E-8,
+    w_max::Float64=Inf,
+    is_active::Base.RefValue{Bool}=Ref(true))
+  @assert covariance_pop_post(covariance_estimator) === pop_post "Covariance estimator must track the postsynaptic population"
+  @assert covariance_pop_pre(covariance_estimator) === pop_pre "Covariance estimator must track the presynaptic population"
+  @assert synapses_post_pre.n_post == pop_post.n "Synapse postsynaptic dimension must match pop_post.n"
+  @assert synapses_post_pre.n_pre == pop_pre.n "Synapse presynaptic dimension must match pop_pre.n"
+  @assert covariance_n_post(covariance_estimator) == pop_post.n "Covariance postsynaptic dimension must match pop_post.n"
+  @assert covariance_n_pre(covariance_estimator) == pop_pre.n "Covariance presynaptic dimension must match pop_pre.n"
+  @assert size(scale_matrix) == (pop_post.n,pop_pre.n) "Scale matrix dimensions must match (pop_post.n, pop_pre.n)"
+  return RatePlasticityScaledSQRC(
+    pop_pre,pop_post,synapses_post_pre,B,α_leak,Δt,learning_rate,
+    covariance_estimator,scale_matrix,Ref(-Inf),is_active,w_min,w_max,
+  )
+end
+
+@inline _signed_sqrt(covariance::Float64) = copysign(sqrt(abs(covariance)),covariance)
+
+function _update_sqrc_plasticity!(
+    weights::Matrix{Float64}, covariance_now::Matrix{Float64},
+    rates_pre::Vector{Float64}, rates_post::Vector{Float64}, B::Float64,
+    α_leak::Float64, effective_learning_rate::Float64,
+    w_min::Float64, w_max::Float64; transposed::Bool=false,
+    scale_matrix::Union{Nothing,Matrix{Float64}}=nothing)
+  n_post,n_pre = size(weights)
+  @inbounds for j in 1:n_pre
+    for i in 1:n_post
+      w_old = weights[i,j]
+      scale = isnothing(scale_matrix) ? 1.0 : scale_matrix[i,j]
+      if (w_old == 0.0) || (scale == 0.0)
+        continue
+      end
+      covariance = transposed ? covariance_now[j,i] : covariance_now[i,j]
+      update = _signed_sqrt(covariance) - α_leak * w_old
+      if B != 0.0
+        update += B * rates_post[i] * rates_pre[j]
+      end
+      weights[i,j] = clamp(w_old + effective_learning_rate * scale * update,w_min,w_max)
+    end
+  end
+  return nothing
+end
+
+function _update_sqrc_plasticity!(weights::Matrix{Float64}, estimator::RateCovarianceEstimator,
+    B::Float64, α_leak::Float64, learning_rate::Float64, w_min::Float64, w_max::Float64;
+    scale_matrix::Union{Nothing,Matrix{Float64}}=nothing)
+  return _update_sqrc_plasticity!(
+    weights,estimator.covariance_now,estimator.mean_pre_estimator.mean_now,
+    estimator.mean_post_estimator.mean_now,B,α_leak,learning_rate,w_min,w_max;
+    scale_matrix=scale_matrix,
+  )
+end
+
+function _update_sqrc_plasticity!(weights::Matrix{Float64}, estimator::CovarianceTransposed,
+    B::Float64, α_leak::Float64, learning_rate::Float64, w_min::Float64, w_max::Float64;
+    scale_matrix::Union{Nothing,Matrix{Float64}}=nothing)
+  covariance_estimator = estimator.covariance_estimator
+  return _update_sqrc_plasticity!(
+    weights,covariance_estimator.covariance_now,
+    covariance_estimator.mean_post_estimator.mean_now,
+    covariance_estimator.mean_pre_estimator.mean_now,B,α_leak,learning_rate,w_min,w_max;
+    transposed=true,scale_matrix=scale_matrix,
+  )
+end
+
+function plasticity!(t_now::Float64,dt::Float64,rule::RatePlasticitySQRC)
+  rule.is_active[] || return nothing
+  if t_now - rule.t_last_update[] < rule.Δt
+    return nothing
+  end
+  rule.t_last_update[] = t_now
+  _update_sqrc_plasticity!(
+    rule.synapses_post_pre.weights,rule.covariance_estimator,rule.B,rule.α_leak,
+    rule.learning_rate * rule.Δt,rule.w_min,rule.w_max,
+  )
+  return nothing
+end
+
+function plasticity!(t_now::Float64,dt::Float64,rule::RatePlasticityScaledSQRC)
+  rule.is_active[] || return nothing
+  if t_now - rule.t_last_update[] < rule.Δt
+    return nothing
+  end
+  rule.t_last_update[] = t_now
+  _update_sqrc_plasticity!(
+    rule.synapses_post_pre.weights,rule.covariance_estimator,rule.B,rule.α_leak,
+    rule.learning_rate * rule.Δt,rule.w_min,rule.w_max;
+    scale_matrix=rule.scale_matrix,
+  )
+  return nothing
+end
+
 
 """
     RatePlasticityCovarianceQuadraticallyStabilized
