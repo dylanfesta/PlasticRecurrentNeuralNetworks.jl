@@ -607,6 +607,7 @@ include("rate_inputs.jl")
       [2.0,4.0],
       [1.0,5.0],
       3.0,
+      -1.0,
       0.1,
       0.1,
       10.0,
@@ -737,6 +738,7 @@ include("rate_inputs.jl")
       synapse,
       population,
       3.0,
+      -1,
       0.2,
       0.5,
       mean_estimator;
@@ -782,6 +784,7 @@ include("rate_inputs.jl")
       synapse_small_dt,
       population,
       3.0,
+      -1,
       0.1,
       0.5,
       mean_estimator;
@@ -809,10 +812,77 @@ include("rate_inputs.jl")
       synapse,
       population,
       3.0,
+      -1,
       0.2,
       0.5,
       other_estimator,
     )
+  end
+
+  @testset "Homeostatic sign contract and direction" begin
+    post = PNN.LinearRateNeuralPopulation(
+      PNN.ExcitatoryRateNeuron(1.0),4;initial_rates=[2.0,4.0,1.0,0.0],
+    )
+    estimator = PNN.RateMeanEstimator(post,1.0,0.1;initial_mean=[1.0,5.0,3.0,5.0])
+    initial = [1.0 0.0; 2.0 1.0; 1.0 2.0; 2.0 1.0]
+    inhibitory_delta = [-0.4 0.0; 1.6 0.8; 0.0 0.0; 0.0 0.0]
+
+    @testset "s=$s" for s in (-1,1,-1.0,1.0)
+      neuron = s == -1 ? PNN.ExcitatoryRateNeuron(1.0) : PNN.InhibitoryRateNeuron(1.0)
+      pre = PNN.LinearRateNeuralPopulation(neuron,2)
+      synapse = PNN.RateLinearSynapses(copy(initial))
+      rule = PNN.RatePlasticityHomeostaticScaling(
+        post,synapse,pre,3.0,s,0.2,0.5,estimator;
+        w_min=0.1,w_max=10.0,
+      )
+      @test rule.s === Float64(s)
+      expected = initial + s * inhibitory_delta
+      @test PNN.plasticity!(0.0,0.01,rule) === nothing
+      @test isapprox(synapse.weights,expected;rtol=1e-12,atol=1e-12)
+
+      kernel_weights = copy(initial)
+      @test PNN._update_homeostatic_scaling!(
+        kernel_weights,post.rates_now,estimator.mean_now,3.0,Float64(s),0.1,0.1,10.0,
+      ) === nothing
+      @test isapprox(kernel_weights,expected;rtol=1e-12,atol=1e-12)
+
+      # Both signs hit the lower and upper bounds, on opposite rows.
+      bounded_synapse = PNN.RateLinearSynapses(copy(initial))
+      bounded_rule = PNN.RatePlasticityHomeostaticScaling(
+        post,bounded_synapse,pre,3.0,s,0.2,5.0,estimator;
+        w_min=0.1,w_max=3.0,
+      )
+      bounded_expected = s == -1 ? [3.0 0.0; 0.1 0.1; 1.0 2.0; 2.0 1.0] :
+        [0.1 0.0; 3.0 3.0; 1.0 2.0; 2.0 1.0]
+      @test PNN.plasticity!(0.0,0.01,bounded_rule) === nothing
+      @test isapprox(bounded_synapse.weights,bounded_expected;rtol=1e-12,atol=1e-12)
+      kernel_weights .= initial
+      @test PNN._update_homeostatic_scaling!(
+        kernel_weights,post.rates_now,estimator.mean_now,3.0,Float64(s),1.0,0.1,3.0,
+      ) === nothing
+      @test isapprox(kernel_weights,bounded_expected;rtol=1e-12,atol=1e-12)
+    end
+
+    synapse = PNN.RateLinearSynapses(ones(4,4))
+    @testset "Invalid sign $s" for s in (0,2,-2,0.5,NaN,Inf,-Inf)
+      @test_throws ArgumentError PNN.RatePlasticityHomeostaticScaling(
+        post,synapse,post,3.0,s,0.2,0.5,estimator,
+      )
+    end
+    @test_throws MethodError PNN.RatePlasticityHomeostaticScaling(
+      post,synapse,post,3.0,0.2,0.5,estimator,
+    )
+
+    @testset "Empty kernel ($n_post, $n_pre), s=$s" for
+        n_post in (0,2), n_pre in (0,2), s in (-1.0,1.0)
+      (n_post == 0 || n_pre == 0) || continue
+      weights = zeros(n_post,n_pre)
+      @test PNN._update_homeostatic_scaling!(
+        weights,zeros(n_post),zeros(n_post),3.0,s,0.1,0.1,10.0,
+      ) === nothing
+      @test size(weights) == (n_post,n_pre)
+      @test isempty(weights)
+    end
   end
 
   @testset "RatePlasticityCovariance" begin

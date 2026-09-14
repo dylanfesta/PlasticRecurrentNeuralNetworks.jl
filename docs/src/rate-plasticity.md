@@ -60,6 +60,42 @@ tuple order and then the plasticity rules. Estimators therefore continue to
 accumulate warm-up statistics while their rules are inactive. Each estimator's
 own `dt` still controls how often its state changes.
 
+## Homeostatic scaling and presynaptic sign
+
+`RatePlasticityHomeostaticScaling` requires a sign argument immediately after
+the target rate `α`: use `s = -1` for an excitatory presynaptic population and
+`s = +1` for an inhibitory presynaptic population. This matches the sign
+convention in HawkesPlasticNetworks' `PlasticityHomeostaticScaling`.
+The caller supplies the sign; it is not inferred from the population type.
+Values other than `+1` or `-1` raise `ArgumentError`.
+
+```julia
+excitatory_rule = RatePlasticityHomeostaticScaling(
+    post_population, synapses_post_exc, excitatory_population,
+    α, -1, 0.01, 0.2, post_mean,
+)
+inhibitory_rule = RatePlasticityHomeostaticScaling(
+    post_population, synapses_post_inh, inhibitory_population,
+    α, +1, 0.01, 0.2, post_mean,
+)
+```
+
+Both rules may share `post_mean`; register that estimator once in the network.
+Every `Δt` seconds, each rule applies
+`Δw = Δt * learning_rate * w * r_post * s * (mean_post - α)` and clips
+the resulting strength to `[w_min, w_max]`.
+
+Weights are positive connection strengths; the presynaptic neuron type supplies
+the sign of their contribution to network input. With positive learning rate
+and postsynaptic rate, a mean above `α` decreases excitatory strengths and
+increases inhibitory strengths. A mean below `α` reverses those directions.
+At the target, or when the instantaneous postsynaptic rate is zero, the
+plasticity increment is zero. Exactly zero weights are skipped; initialize
+plastic connections with positive strengths and a small positive `w_min`.
+
+To migrate an existing call, insert `-1` (excitatory pre) or `+1` (inhibitory pre)
+between `α` and `Δt`. The old signature without `s` is no longer supported.
+
 ## API Reference
 
 ```@autodocs

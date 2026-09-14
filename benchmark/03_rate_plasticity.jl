@@ -81,6 +81,7 @@ homeostatic_rule = PNN.RatePlasticityHomeostaticScaling(
   homeostatic_synapse,
   pre_population,
   α_homeostatic,
+  -1, # Excitatory presynaptic population.
   Δt_plasticity,
   learning_rate,
   post_mean_estimator;
@@ -161,9 +162,9 @@ end
 
 # Naive homeostatic scaling:
 #   For every weight W[post, pre], repeatedly read through the rule object to get
-#   postsynaptic rate and mean state. Only positive weights are plastic. The
+#   postsynaptic rate and mean state. Exactly zero weights are skipped. The
 #   update is multiplicative in the old weight:
-#     W <- clamp(W + ηΔt * W * r_post * (α - mean_post)).
+#     W <- clamp(W + ηΔt * W * r_post * s * (mean_post - α)).
 function plasticity_homeostatic_naive!(
     t_now::Float64,
     dt::Float64,
@@ -184,7 +185,7 @@ function plasticity_homeostatic_naive!(
       end
       r_post = rule.pop_post.rates_now[i]
       r_post_mean = rule.rate_estimator_post.mean_now[i]
-      w_new = w_old + effective_learning_rate * w_old * r_post * (rule.α - r_post_mean)
+      w_new = w_old + effective_learning_rate * w_old * r_post * rule.s * (r_post_mean - rule.α)
       rule.synapses_post_pre.weights[i,j] = clamp(w_new,rule.w_min,rule.w_max)
     end
   end
@@ -199,6 +200,7 @@ function update_homeostatic_kernel!(
     post_rates::Vector{Float64},
     post_means::Vector{Float64},
     α::Float64,
+    s::Float64,
     effective_learning_rate::Float64,
     w_min::Float64,
     w_max::Float64,
@@ -210,7 +212,7 @@ function update_homeostatic_kernel!(
       if w_old == 0.0
         continue
       end
-      w_new = w_old + effective_learning_rate * w_old * post_rates[i] * (α - post_means[i])
+      w_new = w_old + effective_learning_rate * w_old * post_rates[i] * s * (post_means[i] - α)
       weights[i,j] = clamp(w_new,w_min,w_max)
     end
   end
@@ -232,6 +234,7 @@ function plasticity_homeostatic_kernel!(
     rule.pop_post.rates_now,
     rule.rate_estimator_post.mean_now,
     rule.α,
+    rule.s,
     rule.learning_rate * rule.Δt,
     rule.w_min,
     rule.w_max,

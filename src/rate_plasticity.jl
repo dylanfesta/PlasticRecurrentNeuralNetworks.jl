@@ -38,27 +38,34 @@ end
 
 """
     RatePlasticityHomeostaticScaling
-    RatePlasticityHomeostaticScaling(pop_post, synapses_post_pre, pop_pre, α, Δt, learning_rate, rate_estimator_post; is_active=Ref(true), w_min=1E-8, w_max=Inf)
+    RatePlasticityHomeostaticScaling(pop_post, synapses_post_pre, pop_pre, α, s, Δt, learning_rate, rate_estimator_post; is_active=Ref(true), w_min=1E-8, w_max=Inf)
 
 Homeostatic scaling plasticity rule for a pair of rate populations.
-the rule is w <- w + Δt * w * learning rate * r_post(t) *( α - r_post_mean_estimator(t) )
-With an update every Δt seconds. `learning_rate` is interpreted per unit time,
-so each update is internally scaled by the elapsed plasticity interval.
+The update is `w <- w + Δt * learning_rate * w * r_post * s * (mean_post - α)`
+every `Δt` seconds. `learning_rate` is interpreted per unit time.
 
-Note that this rule depends only on the postsynaptic rate, therefore it scales all incoming weights of the same amount.
+The compulsory sign `s` must be `-1` for excitatory presynaptic populations
+and `+1` for inhibitory presynaptic populations, matching the Hawkes rule.
+Only these two values are accepted; the caller selects the sign explicitly.
+Weights represent positive connection strengths. Above the postsynaptic target
+`α`, excitatory strengths decrease and inhibitory strengths increase; below
+target, these directions reverse (for positive rates and learning rate).
+All incoming weights to a given postsynaptic neuron within this rule receive
+the same multiplicative factor before clipping.
 
 Pass a shared `is_active` reference to coordinate this rule with other rules.
 Estimators update independently through `RecurrentNetwork.estimators` while the
 rule is inactive.
 
-IMPORTANT: by convention the rule acts only on weights > 0 . So you must initialize all weights that you want plastic to a small
-positive value, also making sure that w_min > 0 (and very small).
+Exactly zero weights are skipped. Initialize connections that should be plastic
+with positive strengths and use a small positive `w_min` to keep them plastic.
 """
 struct RatePlasticityHomeostaticScaling <: RatePlasticity
   pop_pre::RateNeuralPopulation
   pop_post::RateNeuralPopulation
   synapses_post_pre::RateSynapses
   α::Float64
+  s::Float64
   Δt::Float64
   learning_rate::Float64
   rate_estimator_post::RateMeanEstimator
@@ -73,6 +80,7 @@ function RatePlasticityHomeostaticScaling(
     synapses_post_pre::RateSynapses,
     pop_pre::RateNeuralPopulation,
     α::Float64,
+    s::Real,
     Δt::Float64,
     learning_rate::Float64,
     rate_estimator_post::RateMeanEstimator;
@@ -80,12 +88,16 @@ function RatePlasticityHomeostaticScaling(
     w_max::Float64=Inf,
     is_active::Base.RefValue{Bool}=Ref(true)
 )
+  if !(s == 1 || s == -1)
+    throw(ArgumentError("s must be +1 (inhibitory pre) or -1 (excitatory pre)"))
+  end
   @assert rate_estimator_post.pop === pop_post "Rate estimator must track the postsynaptic population"
   return RatePlasticityHomeostaticScaling(
     pop_pre,
     pop_post,
     synapses_post_pre,
     α,
+    Float64(s),
     Δt,
     learning_rate,
     rate_estimator_post,
@@ -102,6 +114,7 @@ function _update_homeostatic_scaling!(
     post_rates::Vector{Float64},
     post_means::Vector{Float64},
     α::Float64,
+    s::Float64,
     effective_learning_rate::Float64,
     w_min::Float64,
     w_max::Float64)
@@ -112,7 +125,7 @@ function _update_homeostatic_scaling!(
       if w_old == 0.0
         continue
       end
-      w_new = w_old + effective_learning_rate * w_old * post_rates[i] * (α - post_means[i])
+      w_new = w_old + effective_learning_rate * w_old * post_rates[i] * s * (post_means[i] - α)
       weights[i,j] = clamp(w_new,w_min,w_max)
     end
   end
@@ -131,6 +144,7 @@ function plasticity!(t_now::Float64,dt::Float64,rule::RatePlasticityHomeostaticS
     rule.pop_post.rates_now,
     rule.rate_estimator_post.mean_now,
     rule.α,
+    rule.s,
     rule.learning_rate * rule.Δt,
     rule.w_min,
     rule.w_max,
