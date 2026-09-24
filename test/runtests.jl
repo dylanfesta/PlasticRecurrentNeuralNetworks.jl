@@ -1280,7 +1280,10 @@ include("rate_population_compatibility.jl")
     @test rule.t_last_update[] == -Inf
     PNN.plasticity_on!(rule)
     @test PNN.plasticity!(0.0,0.01,rule) === nothing
-    expected_weights = [1.675 0.0 3.05; 4.075 4.45 7.125]
+    expected_weights = [
+      1.175 + 0.05 * sqrt(10.0)  0.0  1.95 + 0.05 * sqrt(22.0)
+      3.325 + 0.05 * sqrt(15.0)  3.4 + 0.05 * sqrt(21.0)  5.475 + 0.05 * sqrt(33.0)
+    ]
     @test isapprox(synapse.weights,expected_weights;rtol=1e-12)
     weights_after_update = copy(synapse.weights)
     @test PNN.plasticity!(0.1,0.01,rule) === nothing
@@ -1329,6 +1332,39 @@ include("rate_population_compatibility.jl")
       0.5,1.0,1.0,covariance,
     )
     @test scaled_with_b.B == 0.5
+
+    @testset "SQRC rate term scaled=$scaled transposed=$transposed zero_rates=$zero_rates" for
+        scaled in (false,true), transposed in (false,true), zero_rates in (false,true)
+      post_mean.mean_now .= zero_rates ? [0.0,3.0] : [2.0,3.0]
+      pre_mean.mean_now .= zero_rates ? [5.0,0.0,11.0] : [5.0,7.0,11.0]
+      rate_roots = zero_rates ? [0.0 0.0 0.0; sqrt(15.0) 0.0 sqrt(33.0)] :
+        [sqrt(10.0) sqrt(14.0) sqrt(22.0); sqrt(15.0) sqrt(21.0) sqrt(33.0)]
+      signed_roots = [2.0 -3.0 0.0; 4.0 -5.0 6.0]
+      initial = [1.0 2.0 0.0; 3.0 4.0 5.0]
+      test_scale = scaled ? scale : ones(2,3)
+      expected = initial .+ 0.1 .* test_scale .* (signed_roots .+ 0.5 .* rate_roots .- 0.25 .* initial)
+      expected[1,3] = 0.0
+      weights = transposed ? permutedims(initial) : copy(initial)
+      test_synapse = PNN.RateLinearSynapses(weights)
+      test_rule = if scaled
+        PNN.RatePlasticityScaledSQRC(
+          transposed ? pre_population : post_population,test_synapse,
+          transposed ? post_population : pre_population,
+          transposed ? permutedims(scale) : scale,0.5,0.2,0.5,
+          transposed ? PNN.CovarianceTransposed(covariance) : covariance;
+          α_leak=0.25,w_min=-Inf,w_max=Inf,
+        )
+      else
+        PNN.RatePlasticitySQRC(
+          transposed ? pre_population : post_population,test_synapse,
+          transposed ? post_population : pre_population,0.5,0.2,0.5,
+          transposed ? PNN.CovarianceTransposed(covariance) : covariance;
+          α_leak=0.25,w_min=-Inf,w_max=Inf,
+        )
+      end
+      @test PNN.plasticity!(0.0,0.01,test_rule) === nothing
+      @test isapprox(test_synapse.weights,transposed ? permutedims(expected) : expected;rtol=1e-12,atol=1e-12)
+    end
 
     wrong_synapse = PNN.RateLinearSynapses(ones(2,2))
     @test_throws AssertionError PNN.RatePlasticitySQRC(

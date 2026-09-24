@@ -645,7 +645,8 @@ end
 
 Signed-square-root covariance plasticity. This is equivalent to
 [`RatePlasticityCovariance`](@ref), except that each covariance `C` is replaced
-by `sign(C) * sqrt(abs(C))`. The mean-product and leak terms are unchanged.
+by `sign(C) * sqrt(abs(C))` and the rate term is replaced by
+`B * sqrt(rates_post[i] * rates_pre[j])`, using the estimated mean rates.
 """
 struct RatePlasticitySQRC <: RatePlasticity
   pop_pre::RateNeuralPopulation
@@ -710,7 +711,8 @@ end
 
 Scaled signed-square-root covariance plasticity. This is equivalent to
 [`RatePlasticityScaledCovariance`](@ref), with each covariance `C` replaced by
-`sign(C) * sqrt(abs(C))`.
+`sign(C) * sqrt(abs(C))` and the rate term replaced by
+`B * sqrt(rates_post[i] * rates_pre[j])`, using the estimated mean rates.
 """
 struct RatePlasticityScaledSQRC <: RatePlasticity
   pop_pre::RateNeuralPopulation
@@ -791,7 +793,7 @@ function _update_sqrc_plasticity!(
       covariance = transposed ? covariance_now[j,i] : covariance_now[i,j]
       update = _signed_sqrt(covariance) - α_leak * w_old
       if B != 0.0
-        update += B * rates_post[i] * rates_pre[j]
+        update += B * sqrt(rates_post[i] * rates_pre[j])
       end
       weights[i,j] = clamp(w_old + effective_learning_rate * scale * update,w_min,w_max)
     end
