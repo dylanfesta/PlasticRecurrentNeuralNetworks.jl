@@ -5,6 +5,9 @@ using Statistics
 using Test
 
 include("rate_inputs.jl")
+include("quadratic_t1_rate_population.jl")
+include("quadratic_t2_rate_population.jl")
+include("rate_population_compatibility.jl")
 
 @testset "PlasticRecurrentNeuralNetworks.jl" begin
   PNN = PlasticRecurrentNeuralNetworks

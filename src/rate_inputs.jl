@@ -103,7 +103,8 @@ end
 
 Return the standard deviation of the Gaussian drive added to the population
 input at each numerical time step. This is the actual noise scale used by
-`forward_signal!`; `inp.σ` is the resulting stationary rate standard deviation.
+`forward_signal!`; `inp.σ` is the resulting stationary rate standard deviation
+only for an isolated, unclipped linear Euler population.
 """
 function noise_scale(
     inp::RateNoisyHomogeneousInput,dt::Float64,rnp::RateNeuralPopulation)

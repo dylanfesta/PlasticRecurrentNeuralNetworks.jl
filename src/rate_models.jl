@@ -19,7 +19,11 @@ abstract type RateNeuronType <: NeuronType end  # RNT
 
 Abstract parent for rate populations with continuous-valued activity.
 
-Concrete populations store the current rate vector and per-step work buffers.
+Concrete populations provide `neuron_type` (with `τ` and `rate_saturation`),
+`n`, and length-`n` vectors `rates_now`, `input_alloc`, and `utility_alloc`.
+`rates_now` always contains firing rates, even when internal dynamics integrate
+a different state variable. Inputs, synapses, estimators, plasticity, and recorders share this field contract;
+each population implements its own internal dynamics through `local_update!`.
 """
 abstract type RateNeuralPopulation <: NeuralPopulation end  # RNP
 
@@ -144,11 +148,137 @@ function LinearRateNeuralPopulation(neuron_type::RateNeuronType,n::Int64;
 end
 
 """
-    clean_up!(rnp::LinearRateNeuralPopulation) -> nothing
+    QuadraticT1RateNeuralPopulation(neuron_type, n; initial_rates=nothing)
+
+Population with rectified quadratic input drive and linear rate decay:
+`τ dr/dt = -r + max(input, 0)^2`. The input is the total accumulated synaptic
+and external drive. Negative input contributes no drive, but decay still applies.
+
+Fields and initialization follow [`LinearRateNeuralPopulation`](@ref):
+`initial_rates` is `nothing` (zeros), a `Float64` (uniform rates), or a
+length-`n` `Vector{Float64}` retained without copying. Input and utility buffers
+start at zero. Both excitatory and inhibitory rate-neuron parameters are supported.
+"""
+struct QuadraticT1RateNeuralPopulation{NT<:RateNeuronType} <: RateNeuralPopulation
+  neuron_type::NT
+  n::Int64
+  rates_now::Vector{Float64}
+  input_alloc::Vector{Float64}
+  utility_alloc::Vector{Float64}
+end
+
+function QuadraticT1RateNeuralPopulation(neuron_type::RateNeuronType,n::Int64;
+    initial_rates::Union{Nothing,Float64,Vector{Float64}}=nothing)
+  if isnothing(initial_rates)
+    rates_now = zeros(Float64,n)
+  elseif isa(initial_rates,Float64)
+    rates_now = fill(initial_rates,n)
+  else
+    @assert length(initial_rates) == n "Length of initial_rates must be equal to n"
+    rates_now = initial_rates
+  end
+  return QuadraticT1RateNeuralPopulation(
+    neuron_type,n,rates_now,zeros(Float64,n),zeros(Float64,n),
+  )
+end
+
+"""
+    QuadraticT2RateNeuralPopulation(neuron_type, n; initial_voltages=nothing, initial_rates=nothing)
+
+Population integrating unbounded voltage with `τ dv/dt = -v + input`.
+Its firing rate is `min(rate_saturation, max(0, v)^2)`. Negative voltages
+are retained, and rate saturation never clips voltage. Use `rate_saturation=Inf`
+in the neuron parameters to disable the rate ceiling.
+
+Supply at most one initialization keyword: a `Float64` or a length-`n`
+`Vector{Float64}`. The default voltage is zero. Voltage vectors are retained;
+rate initialization requires finite values in `[0, rate_saturation]` and creates
+independent voltages using the nonnegative square root.
+
+`voltages_now` stores the dynamical state; `rates_now` is a separate derived
+buffer used by transmission, estimators, plasticity, and recorders. After manual
+edits to `voltages_now`, call [`update_rates!`](@ref). Do not edit `rates_now`
+directly. Input and utility buffers start at zero.
+"""
+struct QuadraticT2RateNeuralPopulation{NT<:RateNeuronType} <: RateNeuralPopulation
+  neuron_type::NT
+  n::Int64
+  voltages_now::Vector{Float64}
+  rates_now::Vector{Float64}
+  input_alloc::Vector{Float64}
+  utility_alloc::Vector{Float64}
+end
+
+function QuadraticT2RateNeuralPopulation(neuron_type::RateNeuronType,n::Int64;
+    initial_voltages::Union{Nothing,Float64,Vector{Float64}}=nothing,
+    initial_rates::Union{Nothing,Float64,Vector{Float64}}=nothing)
+  n >= 0 || throw(ArgumentError("Population size must be nonnegative"))
+  neuron_type.rate_saturation >= 0.0 || throw(ArgumentError(
+    "rate_saturation must be nonnegative and not NaN",
+  ))
+  isnothing(initial_voltages) || isnothing(initial_rates) || throw(ArgumentError(
+    "Supply only one of initial_voltages and initial_rates",
+  ))
+  if !isnothing(initial_rates)
+    rates = initial_rates isa Float64 ? fill(initial_rates,n) : initial_rates
+    length(rates) == n || throw(DimensionMismatch("Length of initial_rates must equal n"))
+    # Validate scalar values even for an empty population.
+    values = initial_rates isa Float64 ? (initial_rates,) : rates
+    all(r -> isfinite(r) && 0.0 <= r <= neuron_type.rate_saturation,values) ||
+      throw(ArgumentError("initial_rates must be finite and within [0, rate_saturation]"))
+    voltages = sqrt.(rates)
+  elseif isnothing(initial_voltages)
+    voltages = zeros(Float64,n)
+  elseif initial_voltages isa Float64
+    voltages = fill(initial_voltages,n)
+  else
+    length(initial_voltages) == n || throw(DimensionMismatch("Length of initial_voltages must equal n"))
+    voltages = initial_voltages
+  end
+  population = QuadraticT2RateNeuralPopulation(
+    neuron_type,n,voltages,zeros(Float64,n),zeros(Float64,n),zeros(Float64,n),
+  )
+  update_rates!(population)
+  return population
+end
+
+"""
+    update_rates!(rnp::QuadraticT2RateNeuralPopulation) -> nothing
+
+Refresh the firing-rate buffer from current voltages without changing voltage:
+`r = min(rate_saturation, max(0, v)^2)`. Construction and `local_update!` call
+this automatically; call it explicitly after manually editing `voltages_now`.
+"""
+function update_rates!(rnp::QuadraticT2RateNeuralPopulation)
+  rate_saturation = rnp.neuron_type.rate_saturation
+  @inbounds @simd for i in 1:rnp.n
+    rnp.rates_now[i] = min(rate_saturation,max(0.0,rnp.voltages_now[i])^2)
+  end
+  return nothing
+end
+
+"""
+    local_update!(t_now, dt, rnp::QuadraticT2RateNeuralPopulation) -> nothing
+
+Euler-integrate voltage with `v_new = v_old + (dt / τ) * (-v_old + input)`,
+then refresh derived firing rates. Voltage is never clamped. Input and utility
+buffers are unchanged.
+"""
+function local_update!(t_now::Float64,dt::Float64,rnp::QuadraticT2RateNeuralPopulation)
+  factor = dt / rnp.neuron_type.τ
+  @inbounds @simd for i in 1:rnp.n
+    rnp.voltages_now[i] += factor * (-rnp.voltages_now[i] + rnp.input_alloc[i])
+  end
+  update_rates!(rnp)
+  return nothing
+end
+
+"""
+    clean_up!(rnp::RateNeuralPopulation) -> nothing
 
 Reset the population input buffer to zero before the next simulation step.
 """
-function clean_up!(rnp::LinearRateNeuralPopulation)
+function clean_up!(rnp::RateNeuralPopulation)
   rnp.input_alloc .= 0.0
   return nothing
 end
@@ -177,6 +307,32 @@ function local_update!(t_now::Float64,dt::Float64,rnp::LinearRateNeuralPopulatio
     elseif _new_rate >= 0.0
       rnp.rates_now[i] = _new_rate
     else 
+      rnp.rates_now[i] = 0.0
+    end
+  end
+  return nothing
+end
+
+
+"""
+    local_update!(t_now, dt, rnp::QuadraticT1RateNeuralPopulation) -> nothing
+
+Advance rates by one Euler step with drive `input > 0 ? input^2 : 0`:
+`r_new = r_old + (dt / τ) * (-r_old + drive)`, clamped to
+`[0, neuron_type.rate_saturation]`. Input and utility buffers are unchanged.
+"""
+function local_update!(t_now::Float64,dt::Float64,rnp::QuadraticT1RateNeuralPopulation)
+  τ = rnp.neuron_type.τ
+  rate_saturation = rnp.neuron_type.rate_saturation
+  @inbounds @simd for i in 1:rnp.n
+    input = rnp.input_alloc[i]
+    drive = input > 0.0 ? input^2 : 0.0
+    new_rate = rnp.rates_now[i] + (dt/τ) * (-rnp.rates_now[i] + drive)
+    if new_rate > rate_saturation
+      rnp.rates_now[i] = rate_saturation
+    elseif new_rate >= 0.0
+      rnp.rates_now[i] = new_rate
+    else
       rnp.rates_now[i] = 0.0
     end
   end
